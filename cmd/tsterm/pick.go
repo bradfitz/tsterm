@@ -1,0 +1,82 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/bradfitz/tsterm/pkg/proto"
+)
+
+// ErrAmbiguous is returned by pickSession when the host has more than one
+// active session and the caller did not name which to attach.
+var ErrAmbiguous = errors.New("multiple sessions present; specify one by name")
+
+// pickResult tells the caller what pickSession decided.
+type pickResult struct {
+	// AttachID is non-empty when an existing session should be attached.
+	AttachID string
+
+	// CreateName is non-empty when a new session should be created with
+	// this name (may be a synthesized name or the user's request).
+	CreateName string
+}
+
+// pickSession encodes the CLI's auto-pick rules for `tsterm HOST [SESSION]`.
+//
+// With name == "":
+//
+//   - 0 sessions → create a new auto-named session.
+//   - 1 session  → attach to it.
+//   - ≥2          → ErrAmbiguous; the caller prints the list.
+//
+// With name set:
+//
+//   - if a session has that name → attach to it;
+//   - otherwise → caller should error or create depending on -new.
+func pickSession(sessions []proto.SessionSummary, name string) (pickResult, error) {
+	active := make([]proto.SessionSummary, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Active {
+			active = append(active, s)
+		}
+	}
+	if name != "" {
+		for _, s := range active {
+			if s.Name == name || s.ID == name {
+				return pickResult{AttachID: s.ID}, nil
+			}
+		}
+		return pickResult{}, fmt.Errorf("no session named %q on host", name)
+	}
+	switch len(active) {
+	case 0:
+		return pickResult{CreateName: ""}, nil
+	case 1:
+		return pickResult{AttachID: active[0].ID}, nil
+	default:
+		return pickResult{}, ErrAmbiguous
+	}
+}
+
+// formatList renders sessions for the user when the caller needs to print
+// them (e.g. on -list or on ambiguous attach).
+func formatList(sessions []proto.SessionSummary) string {
+	if len(sessions) == 0 {
+		return "(no sessions)\n"
+	}
+	var b strings.Builder
+	for _, s := range sessions {
+		state := "active"
+		if !s.Active {
+			state = "ended"
+		}
+		name := s.Name
+		if name == "" {
+			name = "-"
+		}
+		fmt.Fprintf(&b, "%-30s %-12s %dx%d %s watchers=%d\n",
+			s.ID, name, s.Rows, s.Cols, state, s.Watchers)
+	}
+	return b.String()
+}
