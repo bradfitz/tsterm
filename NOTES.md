@@ -103,9 +103,8 @@ libghostty replaces it: replies to queries written to an unread pipe
 swapped; cursor-blink callback inverted; unsynchronized `closed` flag. Its
 public API also can't expose state needed for full checkpoints.
 
-**To do:** the prebuilt repo isn't on GitHub yet. After it's pushed, run
-`go get github.com/bradfitz/tsterm-prebuilt/ghosttyvt@main` and remove the
-`replace` directive from go.mod.
+To update it: change and rebuild in tsterm-prebuilt, push, then run
+`go get github.com/bradfitz/tsterm-prebuilt/ghosttyvt@main` here.
 
 ## Upcoming work
 

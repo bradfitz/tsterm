@@ -3,7 +3,7 @@ module github.com/bradfitz/tsterm
 go 1.27.3
 
 require (
-	github.com/bradfitz/tsterm-prebuilt/ghosttyvt v0.0.0-00010101000000-000000000000
+	github.com/bradfitz/tsterm-prebuilt/ghosttyvt v0.0.0-20261111172641-e4dddd747ab9
 	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/vt v0.0.0-20260527151214-009e6338d40d
@@ -69,5 +69,3 @@ require (
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72 // indirect
 )
-
-replace github.com/bradfitz/tsterm-prebuilt/ghosttyvt => ../github.com/bradfitz/tsterm-prebuilt/ghosttyvt
