@@ -10,10 +10,10 @@ import (
 // whether the two screens match.
 func roundTrip(t *testing.T, rows, cols int, out string) (orig, restored Screen) {
 	t.Helper()
-	a := New(rows, cols)
+	a := newTerm(t, rows, cols)
 	a.Write([]byte(out))
 	orig = a.Snapshot()
-	b := New(rows, cols)
+	b := newTerm(t, rows, cols)
 	b.Write(orig.Repaint())
 	restored = b.Snapshot()
 	// The bell counter is an event count, not state, and is not restored.
@@ -55,61 +55,13 @@ func TestRepaintRoundTrip(t *testing.T) {
 func TestRepaintNotEmptyScreenChanges(t *testing.T) {
 	// Sanity check that roundTrip can fail: a checkpoint of one screen
 	// must not match a different one.
-	a := New(2, 5)
+	a := newTerm(t, 2, 5)
 	a.Write([]byte("abc"))
-	b := New(2, 5)
+	b := newTerm(t, 2, 5)
 	b.Write([]byte("abd"))
-	c := New(2, 5)
+	c := newTerm(t, 2, 5)
 	c.Write(a.Snapshot().Repaint())
 	if c.Snapshot().Equal(b.Snapshot()) {
 		t.Fatal("checkpoint of one screen matches another")
-	}
-}
-
-func TestBoundaryScanner(t *testing.T) {
-	tests := []struct {
-		in   string
-		want bool
-	}{
-		{"", true},
-		{"plain text", true},
-		{"\x1b", false},
-		{"\x1b[", false},
-		{"\x1b[1;3", false},
-		{"\x1b[1;31m", true},
-		{"\x1b[?2004h", true},
-		{"\x1b(", false},
-		{"\x1b(B", true},
-		{"\x1b7", true},
-		{"\x1b]2;title", false},
-		{"\x1b]2;title\x07", true},
-		{"\x1b]8;;url\x1b", false},
-		{"\x1b]8;;url\x1b\\", true},
-		{"\x1bP1$r\x1b\\", true},
-		{"\xe4\xb8", false},     // first two bytes of 世
-		{"\xe4\xb8\x96", true},  // all of 世
-		{"\xf0\x9f\x99", false}, // three of four bytes of 🙂
-		{"\x1b[1\x18", true},    // CAN aborts the sequence
-		{"\x1b[1\r\n", false},   // controls do not end a CSI
-		{"\x1b]0;t\x1b[0m", true},
-	}
-	for _, tt := range tests {
-		var s BoundaryScanner
-		s.Write([]byte(tt.in))
-		if got := s.AtBoundary(); got != tt.want {
-			t.Errorf("AtBoundary after %q = %v, want %v", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestBoundaryScannerAcrossWrites(t *testing.T) {
-	var s BoundaryScanner
-	s.Write([]byte("ok \x1b[3"))
-	if s.AtBoundary() {
-		t.Fatal("at boundary in the middle of a CSI")
-	}
-	s.Write([]byte("1mred"))
-	if !s.AtBoundary() {
-		t.Fatal("not at boundary after the CSI completed")
 	}
 }

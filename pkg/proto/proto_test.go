@@ -51,7 +51,11 @@ func TestEnvelopeOnlyOneFieldEncoded(t *testing.T) {
 }
 
 func TestSnapshotAndDeltaRoundtrip(t *testing.T) {
-	term := vt.New(2, 4)
+	term, err := vt.New(2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
 	if _, err := term.Write([]byte("中A\r\nhi")); err != nil {
 		t.Fatalf("term.Write: %v", err)
 	}

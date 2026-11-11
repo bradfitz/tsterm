@@ -173,3 +173,36 @@ func TestModesMirroredToLocalTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestNotificationsPassedToLocalTerminal(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf)
+	// A notification that predates attaching, in the first full screen,
+	// is not shown.
+	s := makeScreen(2, 5, "")
+	s.Notification = vt.Notification{Seq: 10, Title: "old", Body: "old"}
+	r.Snapshot(proto.Snapshot{S: s})
+	if strings.Contains(buf.String(), "old") {
+		t.Errorf("notification from before attaching shown: %q", buf.String())
+	}
+
+	notify := func(n vt.Notification) string {
+		buf.Reset()
+		r.Apply(proto.Delta{D: vt.ScreenDelta{Rows: 2, Cols: 5, NotificationSet: true, Notification: n}})
+		return buf.String()
+	}
+	if got := notify(vt.Notification{Seq: 11, Title: "Build; CI", Body: "done"}); !strings.Contains(got, "\x1b]777;notify;Build, CI;done\x07") {
+		t.Errorf("titled notification: %q", got)
+	}
+	if got := notify(vt.Notification{Seq: 12, Body: "just a body"}); !strings.Contains(got, "\x1b]9;just a body\x07") {
+		t.Errorf("untitled notification: %q", got)
+	}
+	// Control characters, which could inject escape sequences, are dropped.
+	if got := notify(vt.Notification{Seq: 13, Body: "evil\x07\x1b]2;pwned\x07"}); strings.Contains(got, "\x1b]2") || !strings.Contains(got, "\x1b]9;evil]2;pwned\x07") {
+		t.Errorf("unsanitized notification: %q", got)
+	}
+	// Repeats of the same notification are not shown again.
+	if got := notify(vt.Notification{Seq: 13, Body: "again"}); strings.Contains(got, "again") {
+		t.Errorf("repeated notification shown: %q", got)
+	}
+}

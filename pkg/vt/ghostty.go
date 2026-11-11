@@ -1,14 +1,4 @@
-// Package ghosttyvt is an experimental vt.Terminal backed by libghostty-vt,
-// the terminal emulator from Ghostty, compiled to WebAssembly and run with
-// wazero, a WebAssembly runtime in pure Go, so that tstermd needs no cgo.
-//
-// Each Terminal runs in its own instance of the module, so a fault in the
-// emulator, which parses untrusted output, can only affect its own terminal.
-//
-// The module, its C glue, and the script that builds it live in
-// github.com/bradfitz/tsterm-prebuilt/ghosttyvt, so that this repository
-// doesn't carry the binary's history.
-package ghosttyvt
+package vt
 
 import (
 	"context"
@@ -17,20 +7,34 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bradfitz/tsterm-prebuilt/ghosttyvt"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
-
-	"github.com/bradfitz/tsterm/pkg/vt"
 )
+
+// The terminal emulator is libghostty-vt, Ghostty's, compiled to
+// WebAssembly and run with wazero, a WebAssembly runtime in pure Go, so that
+// tstermd needs no cgo. The module, its C glue, and the script that builds it
+// live in github.com/bradfitz/tsterm-prebuilt/ghosttyvt.
+//
+// Each terminal runs in its own instance of the module, so a fault in the
+// emulator, which parses untrusted output, can only affect its own terminal.
 
 // abiVersion is the version of the glue's contract (its exports, its
 // imports, and the snapshot encoding) that this package implements.
-const abiVersion = 1
+const abiVersion = 2
 
-// DefaultScrollbackBytes bounds each terminal's scrollback memory.
-const DefaultScrollbackBytes = 16 << 20
+// ScrollbackBytes bounds each terminal's scrollback memory.
+const ScrollbackBytes = 16 << 20
+
+// The default colors, as 0xRRGGBB, which a terminal reports to programs
+// that ask (OSC 10 and 11).
+const (
+	DefaultForeground = 0xffffff
+	DefaultBackground = 0x000000
+)
 
 // runtime is the shared wazero runtime and the compiled module.
 type runtime struct {
@@ -40,12 +44,13 @@ type runtime struct {
 
 var getRuntime = sync.OnceValues(func() (*runtime, error) {
 	if ghosttyvt.ABIVersion != abiVersion {
-		return nil, fmt.Errorf("ghosttyvt: prebuilt module has ABI version %d; want %d", ghosttyvt.ABIVersion, abiVersion)
+		return nil, fmt.Errorf("vt: prebuilt module has ABI version %d; want %d", ghosttyvt.ABIVersion, abiVersion)
 	}
 	ctx := context.Background()
 	r := wazero.NewRuntime(ctx)
 	_, err := r.NewHostModuleBuilder("env").
 		NewFunctionBuilder().WithFunc(hostWritePTY).Export("write_pty").
+		NewFunctionBuilder().WithFunc(hostNotify).Export("notify").
 		Instantiate(ctx)
 	if err != nil {
 		return nil, err
@@ -62,111 +67,122 @@ var getRuntime = sync.OnceValues(func() (*runtime, error) {
 	defer mod.Close(ctx)
 	f := mod.ExportedFunction("tsterm_abi_version")
 	if f == nil {
-		return nil, errors.New("ghosttyvt: prebuilt module has no tsterm_abi_version")
+		return nil, errors.New("vt: prebuilt module has no tsterm_abi_version")
 	}
 	if res, err := f.Call(ctx); err != nil || len(res) != 1 || res[0] != abiVersion {
-		return nil, fmt.Errorf("ghosttyvt: prebuilt module reports ABI version %v (%v); want %d", res, err, abiVersion)
+		return nil, fmt.Errorf("vt: prebuilt module reports ABI version %v (%v); want %d", res, err, abiVersion)
 	}
 	return &runtime{r: r, compiled: compiled}, nil
 })
 
-// terminals maps the IDs the module knows terminals by to the Terminals,
-// for hostWritePTY.
+// terminals maps the IDs the module knows terminals by to the terminals,
+// for the host functions.
 var (
-	terminals sync.Map // uint32 => *Terminal
+	terminals sync.Map // uint32 => *ghostty
 	lastID    atomic.Uint32
 )
 
-// hostWritePTY is the module's write_pty import: the terminal's reply to a
-// query, which belongs on the PTY's input. It runs during tsterm_write, with
-// the Terminal's mu held.
-func hostWritePTY(ctx context.Context, m api.Module, id, ptr, size uint32) {
+func terminalFor(id uint32) *ghostty {
 	v, ok := terminals.Load(id)
 	if !ok {
-		return
+		return nil
 	}
-	if b, ok := m.Memory().Read(ptr, size); ok {
-		t := v.(*Terminal)
-		t.replies = append(t.replies, b...)
+	return v.(*ghostty)
+}
+
+// hostWritePTY is the module's write_pty import: the terminal's reply to a
+// query, which belongs on the PTY's input. It runs during tsterm_write, with
+// the terminal's mu held.
+func hostWritePTY(ctx context.Context, m api.Module, id, ptr, size uint32) {
+	if t := terminalFor(id); t != nil {
+		if b, ok := m.Memory().Read(ptr, size); ok {
+			t.replies = append(t.replies, b...)
+		}
 	}
 }
 
-// Terminal is a vt.Terminal backed by libghostty-vt. It is safe for
-// concurrent use.
-type Terminal struct {
+// hostNotify is the module's notify import: a program's request for a
+// desktop notification. It runs during tsterm_write, with the terminal's mu
+// held.
+func hostNotify(ctx context.Context, m api.Module, id, titlePtr, titleLen, bodyPtr, bodyLen uint32) {
+	t := terminalFor(id)
+	if t == nil {
+		return
+	}
+	title, _ := m.Memory().Read(titlePtr, titleLen)
+	body, _ := m.Memory().Read(bodyPtr, bodyLen)
+	t.notifications++
+	t.notification = Notification{
+		Seq:   t.seqBase + t.notifications,
+		Title: validUTF8(string(title)),
+		Body:  validUTF8(string(body)),
+	}
+}
+
+// ghostty is a Terminal backed by libghostty-vt.
+type ghostty struct {
 	id uint32
 
-	mu      sync.Mutex
-	mod     api.Module
-	ctx     uint32 // the glue's ctx pointer
-	closed  bool
-	replies []byte
-	last    vt.Screen // baseline for Diff
+	// seqBase offsets the terminal's bell and notification counters, so
+	// that they increase across restores, as across tstermd restarts:
+	// it's the time the terminal was created or restored, in nanoseconds.
+	seqBase uint64
+
+	mu            sync.Mutex
+	mod           api.Module
+	ctx           uint32 // the glue's ctx pointer
+	closed        bool
+	replies       []byte
+	notifications uint64
+	notification  Notification
+	last          Screen // baseline for Diff
+	final         Screen // the screen at Close
 
 	// in is a reusable buffer in the module's memory for writes.
 	in, inCap uint32
 
-	fWrite, fResize, fSnapshot, fOutLen, fCheckpoint, fFree, fAlloc, fFreeMem api.Function
+	fWrite, fResize, fSnapshot, fOutLen, fCheckpoint, fFree, fAlloc, fFreeMem, fSetColors api.Function
 }
 
-var _ vt.Terminal = (*Terminal)(nil)
-
-// New returns a rows×cols terminal.
-func New(rows, cols int) (*Terminal, error) {
+// New returns a new rows×cols terminal.
+func New(rows, cols int) (Terminal, error) {
 	t, err := instantiate()
 	if err != nil {
 		return nil, err
 	}
-	res, err := t.call(t.mod.ExportedFunction("tsterm_new"), uint64(t.id), uint64(cols), uint64(rows), DefaultScrollbackBytes)
+	res, err := t.call(t.mod.ExportedFunction("tsterm_new"), uint64(t.id), uint64(cols), uint64(rows), ScrollbackBytes)
 	if err != nil || res == 0 {
 		t.Close()
-		return nil, fmt.Errorf("ghosttyvt: creating terminal: %v", err)
+		return nil, fmt.Errorf("vt: creating terminal: %v", err)
 	}
 	t.ctx = uint32(res)
 	t.SetColors(DefaultForeground, DefaultBackground)
 	return t, nil
 }
 
-// The default colors, as 0xRRGGBB.
-const (
-	DefaultForeground = 0xffffff
-	DefaultBackground = 0x000000
-)
-
-// SetColors sets the default foreground and background colors, as
-// 0xRRGGBB, which the terminal reports to programs that ask. A client's
-// theme could supply them.
-func (t *Terminal) SetColors(fg, bg uint32) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if !t.closed {
-		t.call(t.mod.ExportedFunction("tsterm_set_colors"), uint64(t.ctx), uint64(fg), uint64(bg))
-	}
-}
-
-// Restore returns a terminal restored from a Checkpoint.
-func Restore(checkpoint []byte) (*Terminal, error) {
+// restoreNative returns a terminal restored from a libghostty snapshot.
+func restoreNative(snapshot []byte) (*ghostty, error) {
 	t, err := instantiate()
 	if err != nil {
 		return nil, err
 	}
-	ptr, err := t.alloc(uint32(len(checkpoint)))
+	ptr, err := t.alloc(uint32(len(snapshot)))
 	if err != nil {
 		t.Close()
 		return nil, err
 	}
-	t.mod.Memory().Write(ptr, checkpoint)
-	res, err := t.call(t.mod.ExportedFunction("tsterm_restore"), uint64(t.id), uint64(ptr), uint64(len(checkpoint)))
-	t.call(t.fFreeMem, uint64(ptr), uint64(len(checkpoint)))
+	t.mod.Memory().Write(ptr, snapshot)
+	res, err := t.call(t.mod.ExportedFunction("tsterm_restore"), uint64(t.id), uint64(ptr), uint64(len(snapshot)), ScrollbackBytes)
+	t.call(t.fFreeMem, uint64(ptr), uint64(len(snapshot)))
 	if err != nil || res == 0 {
 		t.Close()
-		return nil, errors.New("ghosttyvt: checkpoint not restorable")
+		return nil, errors.New("vt: snapshot not restorable")
 	}
 	t.ctx = uint32(res)
 	return t, nil
 }
 
-func instantiate() (*Terminal, error) {
+func instantiate() (*ghostty, error) {
 	rt, err := getRuntime()
 	if err != nil {
 		return nil, err
@@ -176,8 +192,9 @@ func instantiate() (*Terminal, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Terminal{
+	t := &ghostty{
 		id:          lastID.Add(1),
+		seqBase:     uint64(time.Now().UnixNano()),
 		mod:         mod,
 		fWrite:      mod.ExportedFunction("tsterm_write"),
 		fResize:     mod.ExportedFunction("tsterm_resize"),
@@ -187,12 +204,13 @@ func instantiate() (*Terminal, error) {
 		fFree:       mod.ExportedFunction("tsterm_free"),
 		fAlloc:      mod.ExportedFunction("ghostty_wasm_alloc"),
 		fFreeMem:    mod.ExportedFunction("ghostty_wasm_free"),
+		fSetColors:  mod.ExportedFunction("tsterm_set_colors"),
 	}
 	terminals.Store(t.id, t)
 	return t, nil
 }
 
-func (t *Terminal) call(f api.Function, args ...uint64) (uint64, error) {
+func (t *ghostty) call(f api.Function, args ...uint64) (uint64, error) {
 	res, err := f.Call(context.Background(), args...)
 	if err != nil {
 		return 0, err
@@ -203,20 +221,19 @@ func (t *Terminal) call(f api.Function, args ...uint64) (uint64, error) {
 	return res[0], nil
 }
 
-func (t *Terminal) alloc(n uint32) (uint32, error) {
+func (t *ghostty) alloc(n uint32) (uint32, error) {
 	ptr, err := t.call(t.fAlloc, uint64(n))
 	if err != nil || ptr == 0 {
-		return 0, fmt.Errorf("ghosttyvt: allocating %d bytes: %v", n, err)
+		return 0, fmt.Errorf("vt: allocating %d bytes: %v", n, err)
 	}
 	return uint32(ptr), nil
 }
 
-// Write feeds terminal output to the emulator.
-func (t *Terminal) Write(p []byte) (int, error) {
+func (t *ghostty) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		return 0, errors.New("ghosttyvt: terminal closed")
+		return 0, errors.New("vt: terminal closed")
 	}
 	n := len(p)
 	for len(p) > 0 {
@@ -233,15 +250,14 @@ func (t *Terminal) Write(p []byte) (int, error) {
 		}
 		t.mod.Memory().Write(t.in, chunk)
 		if _, err := t.call(t.fWrite, uint64(t.ctx), uint64(t.in), uint64(len(chunk))); err != nil {
-			return 0, fmt.Errorf("ghosttyvt: %w", err)
+			return 0, fmt.Errorf("vt: %w", err)
 		}
 		p = p[len(chunk):]
 	}
 	return n, nil
 }
 
-// Resize changes the grid size.
-func (t *Terminal) Resize(rows, cols int) {
+func (t *ghostty) Resize(rows, cols int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.closed {
@@ -249,8 +265,18 @@ func (t *Terminal) Resize(rows, cols int) {
 	}
 }
 
-// Replies returns and clears the terminal's replies to queries.
-func (t *Terminal) Replies() []byte {
+// SetColors sets the default foreground and background colors, as
+// 0xRRGGBB, which the terminal reports to programs that ask. A client's
+// theme could supply them.
+func (t *ghostty) SetColors(fg, bg uint32) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.closed {
+		t.call(t.fSetColors, uint64(t.ctx), uint64(fg), uint64(bg))
+	}
+}
+
+func (t *ghostty) Replies() []byte {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r := t.replies
@@ -258,82 +284,94 @@ func (t *Terminal) Replies() []byte {
 	return r
 }
 
-// Checkpoint returns the terminal's complete state, for Restore: both
-// screens, scrollback, modes, the scroll region, the saved cursor, and any
-// unfinished escape sequence.
-func (t *Terminal) Checkpoint() ([]byte, error) {
+func (t *ghostty) Checkpoint() ([]byte, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.outLocked(t.fCheckpoint)
+	native, err := t.outLocked(t.fCheckpoint)
+	var s Screen
+	if err == nil {
+		s, err = t.snapshotLocked()
+	}
+	t.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return encodeCheckpoint(native, s.Repaint()), nil
 }
 
 // outLocked calls f, a glue function returning its output buffer, and
 // copies the buffer out.
-func (t *Terminal) outLocked(f api.Function) ([]byte, error) {
+func (t *ghostty) outLocked(f api.Function) ([]byte, error) {
 	if t.closed {
-		return nil, errors.New("ghosttyvt: terminal closed")
+		return nil, errors.New("vt: terminal closed")
 	}
 	ptr, err := t.call(f, uint64(t.ctx))
 	if err != nil {
 		return nil, err
 	}
 	if ptr == 0 {
-		return nil, errors.New("ghosttyvt: failed")
+		return nil, errors.New("vt: failed")
 	}
 	n, _ := t.call(t.fOutLen, uint64(t.ctx))
 	b, ok := t.mod.Memory().Read(uint32(ptr), uint32(n))
 	if !ok {
-		return nil, errors.New("ghosttyvt: bad output buffer")
+		return nil, errors.New("vt: bad output buffer")
 	}
 	return append([]byte(nil), b...), nil
 }
 
-// Close frees the terminal's module instance.
-func (t *Terminal) Close() error {
+func (t *ghostty) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
 		return nil
 	}
+	t.final, _ = t.snapshotLocked()
 	t.closed = true
 	terminals.Delete(t.id)
 	return t.mod.Close(context.Background())
 }
 
-// Snapshot returns the visible screen.
-func (t *Terminal) Snapshot() vt.Screen {
+func (t *ghostty) Snapshot() Screen {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	s, err := t.snapshotLocked()
 	if err != nil {
-		return vt.Screen{}
+		return Screen{}
 	}
 	return s
 }
 
-func (t *Terminal) snapshotLocked() (vt.Screen, error) {
+func (t *ghostty) snapshotLocked() (Screen, error) {
+	if t.closed {
+		return t.final, nil
+	}
 	b, err := t.outLocked(t.fSnapshot)
 	if err != nil {
-		return vt.Screen{}, err
+		return Screen{}, err
 	}
-	return decodeSnapshot(b)
+	s, err := decodeSnapshot(b)
+	if err != nil {
+		return Screen{}, err
+	}
+	if s.BellSeq != 0 {
+		s.BellSeq += t.seqBase
+	}
+	s.Notification = t.notification
+	return s, nil
 }
 
-// Diff returns the changes since the last Diff.
-func (t *Terminal) Diff() vt.ScreenDelta {
+func (t *ghostty) Diff() ScreenDelta {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	cur, _ := t.snapshotLocked()
-	d := vt.Diff(t.last, cur)
+	d := Diff(t.last, cur)
 	t.last = cur
 	return d
 }
 
-// Modes returns the terminal's modes.
-func (t *Terminal) Modes() vt.Modes { return t.Snapshot().Modes }
+func (t *ghostty) Modes() Modes { return t.Snapshot().Modes }
 
-// Size returns the grid size.
-func (t *Terminal) Size() (rows, cols int) {
+func (t *ghostty) Size() (rows, cols int) {
 	s := t.Snapshot()
 	return s.Rows, s.Cols
 }
@@ -362,24 +400,25 @@ const (
 	underlineShift = 8
 )
 
-// flagAttrs maps libghostty style flags to vt attributes.
+// flagAttrs maps libghostty style flags to attributes.
 var flagAttrs = []struct {
 	flag uint16
-	attr vt.Attr
+	attr Attr
 }{
-	{flagBold, vt.AttrBold},
-	{flagItalic, vt.AttrItalic},
-	{flagFaint, vt.AttrFaint},
-	{flagBlink, vt.AttrBlink},
-	{flagInverse, vt.AttrReverse},
-	{flagInvisible, vt.AttrConceal},
-	{flagStrikethrough, vt.AttrStrikethrough},
+	{flagBold, AttrBold},
+	{flagItalic, AttrItalic},
+	{flagFaint, AttrFaint},
+	{flagBlink, AttrBlink},
+	{flagInverse, AttrReverse},
+	{flagInvisible, AttrConceal},
+	{flagStrikethrough, AttrStrikethrough},
 }
 
-// decodeSnapshot decodes tsterm_snapshot's encoding; see glue/tsterm.c.
-func decodeSnapshot(b []byte) (vt.Screen, error) {
+// decodeSnapshot decodes tsterm_snapshot's encoding; see the glue's
+// tsterm.c.
+func decodeSnapshot(b []byte) (Screen, error) {
 	d := decoder{b: b}
-	var s vt.Screen
+	var s Screen
 	s.Rows = int(d.u16())
 	s.Cols = int(d.u16())
 	s.Cursor.Col = int(d.u16())
@@ -388,34 +427,34 @@ func decodeSnapshot(b []byte) (vt.Screen, error) {
 	s.Cursor.Blink = d.u8() != 0
 	switch d.u8() {
 	case 0:
-		s.Cursor.Style = vt.CursorBar
+		s.Cursor.Style = CursorBar
 	case 2:
-		s.Cursor.Style = vt.CursorUnderline
+		s.Cursor.Style = CursorUnderline
 	default:
-		s.Cursor.Style = vt.CursorBlock
+		s.Cursor.Style = CursorBlock
 	}
 	modes := d.u32()
-	s.Modes = vt.Modes{
+	s.Modes = Modes{
 		AltScreen:         modes&modeAltScreen != 0,
 		ApplicationCursor: modes&modeAppCursor != 0,
 		BracketedPaste:    modes&modeBracketedPaste != 0,
 		FocusEvents:       modes&modeFocusEvents != 0,
 		MouseSGR:          modes&modeMouseSGR != 0,
 		CursorVisible:     modes&modeCursorVisible != 0,
-		Mouse:             vt.MouseMode(modes >> modeMouseShift & 0xf),
+		Mouse:             MouseMode(modes >> modeMouseShift & 0xf),
 	}
 	s.BellSeq = d.u64()
-	s.Title = string(d.bytes(int(d.u32())))
-	s.Cells = make([][]vt.Cell, s.Rows)
+	s.Title = validUTF8(string(d.bytes(int(d.u32()))))
+	s.Cells = make([][]Cell, s.Rows)
 	for y := range s.Rows {
-		row := make([]vt.Cell, s.Cols)
+		row := make([]Cell, s.Cols)
 		for x := range s.Cols {
 			wide := d.u8()
 			flags := d.u16()
 			fg, bg := d.color(), d.color()
 			g := string(d.bytes(int(d.u8())))
 			link := string(d.bytes(int(d.u16())))
-			c := vt.Cell{Grapheme: g, Width: 1, Link: link}
+			c := Cell{Grapheme: validUTF8(g), Width: 1, Link: validUTF8(link)}
 			switch wide {
 			case 1:
 				c.Width = 2
@@ -425,7 +464,7 @@ func decodeSnapshot(b []byte) (vt.Screen, error) {
 			if c.Width != 0 && c.Grapheme == "" {
 				c.Grapheme = " "
 			}
-			c.Style = vt.Style{Fg: fg, Bg: bg, Underline: vt.UnderlineStyle(flags >> underlineShift & 0x7)}
+			c.Style = Style{Fg: fg, Bg: bg, Underline: UnderlineStyle(flags >> underlineShift & 0x7)}
 			for _, fa := range flagAttrs {
 				if flags&fa.flag != 0 {
 					c.Style.Attrs |= fa.attr
@@ -436,7 +475,7 @@ func decodeSnapshot(b []byte) (vt.Screen, error) {
 		s.Cells[y] = row
 	}
 	if d.err != nil {
-		return vt.Screen{}, d.err
+		return Screen{}, d.err
 	}
 	return s, nil
 }
@@ -448,7 +487,7 @@ type decoder struct {
 
 func (d *decoder) bytes(n int) []byte {
 	if d.err != nil || n > len(d.b) {
-		d.err = errors.New("ghosttyvt: truncated snapshot")
+		d.err = errors.New("vt: truncated snapshot")
 		return nil
 	}
 	v := d.b[:n]
@@ -485,13 +524,13 @@ func (d *decoder) u64() uint64 {
 	return 0
 }
 
-func (d *decoder) color() vt.Color {
+func (d *decoder) color() Color {
 	tag, a, g, b := d.u8(), d.u8(), d.u8(), d.u8()
 	switch tag {
 	case 1:
-		return vt.Color{Kind: vt.ColorIndexed, Index: a}
+		return Color{Kind: ColorIndexed, Index: a}
 	case 2:
-		return vt.Color{Kind: vt.ColorRGB, R: a, G: g, B: b}
+		return Color{Kind: ColorRGB, R: a, G: g, B: b}
 	}
-	return vt.Color{}
+	return Color{}
 }

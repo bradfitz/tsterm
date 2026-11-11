@@ -47,64 +47,56 @@ Run it: `go install ./cmd/...`, then
 `systemd-run --user --unit=tstermd --collect ~/go/bin/tstermd`. User
 services need lingering (`loginctl enable-linger`).
 
-## In progress: libghostty-vt as the emulator
+## Terminal emulator: libghostty-vt
 
-Spike in `pkg/vt/ghosttyvt`: a `vt.Terminal` backed by libghostty-vt
-(Ghostty's emulator, 1.0) compiled to wasm32 and run with wazero, so no cgo.
-Not yet wired into tstermd.
+The emulator (`pkg/vt`) is libghostty-vt, Ghostty's, compiled to wasm32 and
+run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
 
-- **Build.** The wasm module lives in its own repo and Go module,
+- **Module.** The wasm lives in its own repo and Go module,
   `github.com/bradfitz/tsterm-prebuilt/ghosttyvt` (local checkout:
   ~/src/github.com/bradfitz/tsterm-prebuilt), which exports it as
   `ghosttyvt.Wasm` so tsterm's history doesn't grow with each rebuild. Its
   `build.sh` fetches a pinned Zig (0.17.1) and the `vt-1.0.0` source, builds
   `libghostty-vt.a` for wasm32, links our glue (`glue/tsterm.c`) into
   `ghosttyvt.wasm` (~890 KB; reproducible), and generates `version.go`. The
-  glue's contract with `pkg/vt/ghosttyvt` (exports, imports, snapshot
+  glue's contract with `pkg/vt/ghostty.go` (exports, imports, snapshot
   encoding) is versioned by `TSTERM_ABI_VERSION`, checked at load. Licenses:
   Ghostty's MIT `LICENSE`, and `THIRD_PARTY_LICENSES` for the other linked
   code (uucode, translate_c, Zig's compiler_rt). The stock wasm build can't
-  be used: it has no
-  imports and delivers effects (such as replies to terminal queries) via C
-  function pointers, which a wasm host can't supply. The glue forwards them to
-  a host import, and encodes a whole screen in one call so the host crosses
-  the wasm boundary once per snapshot instead of several times per cell.
-- **Results.**
-  - Screens identical to the current emulator on the test corpus (text,
-    styles, wide characters, links, titles, modes, cursor, alt screen).
-  - Replies to queries work (device attributes, cursor position, colors).
-  - Handles 0x9C in titles (Claude Code's "✳") and OSC 8 links natively.
-  - Full-fidelity checkpoints (`ghostty_snapshot_*`): both screens, scroll
-    region, saved cursor, pen, pending wrap, unfinished escape sequences, and
-    scrollback (500 lines: 6.5 KB). All cases our ANSI repaint can't do.
-  - Write throughput 132 MB/s vs. 15 MB/s for charmbracelet/x/vt.
-  - One wasm instance per terminal: a fault is contained to its session.
-- **Costs.**
-  - Snapshot of 200×60: 1.4 ms vs. 0.7 ms (0.9 ms in wasm, 0.55 ms decoding
-    in Go). Fix: snapshot only dirty rows (the render state tracks them).
-  - ~2 MB of wasm memory per terminal at start (1 MB is the stack, which
-    could shrink), growing with scrollback (16 MB cap in the glue; libghostty
-    can compress history). Wasm memory never shrinks.
-  - Module compile: ~0.3 s once at startup (wazero can cache to disk).
-  - The snapshot byte format is versioned separately from libghostty and not
-    covered by its ABI promise, so a newer tstermd may not read an older
-    checkpoint. Options: keep our ANSI repaint as a fallback in the
-    checkpoint, or record the format version and refuse gracefully.
-- **Next, if adopted.** Wire it in behind `pkg/vt` and drop charm and the
-  workarounds below; switch shim checkpoints to libghostty snapshots; dirty-
-  row snapshots; expose scrollback; set default colors from the client's
-  theme (`Terminal.SetColors`); pin a stable libghostty release artifact
-  rather than building from the tag; drop the `BoundaryScanner` (libghostty
-  snapshots unfinished sequences).
+  be used: it has no imports and delivers effects (replies to terminal
+  queries, notifications) via C function pointers, which a wasm host can't
+  supply; the glue forwards them to host imports, and encodes a whole screen
+  in one call so the host crosses the wasm boundary once per snapshot.
+  To update it: change and rebuild in tsterm-prebuilt, push, then run
+  `go get github.com/bradfitz/tsterm-prebuilt/ghosttyvt@main` here.
+- **Checkpoints** hold libghostty's native snapshot (both screens, scroll
+  region, saved cursor, pen, pending wrap, unfinished escape sequences,
+  scrollback) plus our ANSI repaint as a fallback, because libghostty
+  versions its snapshot format separately from its ABI. Checkpoints from
+  before the switch (bare repaints) still restore.
+- **Tests** use `internal/fakeapp`, a stand-in full-screen program (alt
+  screen, scroll region, modes, terminal queries, notifications) that test
+  binaries run as themselves in a PTY; see `pkg/session/fakeapp_test.go`.
+- **Desktop notifications** (OSC 9 and 777) travel in the screen state, like
+  the bell. The CLI passes them to the local terminal (control characters
+  stripped); the web viewer shows them with the browser's Notification API
+  while the page is in the background, once the user allows it.
+- **Performance.** Writes: 132 MB/s (charm: 15). Snapshot of 200×60:
+  1.4 ms (charm: 0.7); fix by snapshotting only dirty rows (the render state
+  tracks them). Each terminal: ~2 MB of wasm memory at start (1 MB is the
+  stack, which could shrink), growing with scrollback (16 MB cap; libghostty
+  can compress history); wasm memory never shrinks. Module compile: ~0.3 s
+  at startup (wazero can cache to disk).
+- **Next.** Dirty-row snapshots; expose scrollback to clients; set default
+  colors from the client's theme (`SetColors` in `pkg/vt/ghostty.go`); pin a
+  stable libghostty release artifact rather than building from the tag;
+  checkpoints carry the whole scrollback every 256 KB or 5s of output, and
+  the shim protocol sends them as base64 JSON, so a binary frame for the
+  blob may be worth it.
 
-Workarounds for charmbracelet/x/vt bugs (in `pkg/vt/charmvt.go`), moot if
-libghostty replaces it: replies to queries written to an unread pipe
-(blocked Write forever); 0x9C ending OSC strings; OSC 8 URI and params
-swapped; cursor-blink callback inverted; unsynchronized `closed` flag. Its
-public API also can't expose state needed for full checkpoints.
-
-To update it: change and rebuild in tsterm-prebuilt, push, then run
-`go get github.com/bradfitz/tsterm-prebuilt/ghosttyvt@main` here.
+**To do:** push tsterm-prebuilt's ABI-2 commit (80d5178), then run
+`go get github.com/bradfitz/tsterm-prebuilt/ghosttyvt@main` and remove the
+`replace` directive from go.mod.
 
 ## Upcoming work
 
@@ -121,11 +113,28 @@ To update it: change and rebuild in tsterm-prebuilt, push, then run
 - **Read-only share links**: WebSocket connections without `?write=1` are
   already view-only; needs a way to grant non-owners view access.
 - **Protocol gaps** for GUI clients: scrollback; client theme colors (the
-  emulator answers color queries with its own defaults); OSC 52 clipboard;
-  OSC 9/777 notifications (useful for Claude Code); images (Kitty graphics).
+  emulator answers color queries with its own defaults).
 - **Web UI**: mouse input; IME; keys browsers keep (Ctrl-W, Ctrl-T).
 - **Naming**: user aliases exist (rename); optional window-title prefixing
   with the alias is still to do.
+
+## Maybe future
+
+libghostty supports these, but each needs a security model first: what a
+program in a session may do to the user's machine through a client, and
+especially what a page in a browser may do. And each needs working out for
+the web UI, where browsers restrict or lack the equivalent.
+
+- **OSC 52 clipboard.** A program writing the user's clipboard, and
+  especially reading it, is a data-exfiltration channel. Would need per-
+  session consent; browsers only allow clipboard access on a user gesture.
+- **Kitty keyboard protocol.** Less ambiguous key reporting; mostly a
+  client-side encoding question, but browsers don't expose every key.
+- **Shell-integration markers** (OSC 133 prompts, OSC 7 working directory).
+  Useful for prompt navigation and "open a new session here", but they're
+  program-controlled claims to treat as untrusted.
+- **Kitty graphics** (images). Needs an image transport in the protocol and
+  bounds on memory; image decoding of untrusted data.
 
 ## TODOs and known gaps
 
@@ -137,8 +146,7 @@ To update it: change and rebuild in tsterm-prebuilt, push, then run
   macOS/BSDs (`getpeereid`) TODO in `pkg/shim/peer_other.go`.
 - Input could be applied twice if the server applies a keystroke, its ack is
   lost, and the link stays one-way broken for the whole idle timeout.
-- Hyperlink URIs and graphemes over 256 bytes are dropped by the ghosttyvt
-  glue.
+- Hyperlink URIs and graphemes over 256 bytes are dropped by the glue.
 - No remote yet; history before 2026-11-10 was reconstructed approximately.
 
 ## Conventions

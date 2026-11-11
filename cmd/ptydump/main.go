@@ -43,7 +43,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	term := vt.New(*rows, *cols)
+	term, err := vt.New(*rows, *cols)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ptydump: %v\n", err)
+		os.Exit(1)
+	}
 	_, copyErr := io.Copy(term, p)
 	waitErr := p.Wait()
 

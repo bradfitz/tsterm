@@ -132,6 +132,8 @@ function rerenderRow(y) {
 
 function applySnapshot(s) {
   setSize(s.r || 0, s.c || 0);
+  // A notification from before this snapshot is old news.
+  lastNotification = (s.n && s.n.s) || 0;
   rows = s.x || [];
   cursor = s.cur || null;
   modes = s.m || {};
@@ -152,6 +154,11 @@ function applyDelta(d) {
     touched.add(run.r);
   }
   if (d.mc) modes = d.m || {};
+  if (d.ns && d.n && (d.n.s || 0) > lastNotification) {
+    lastNotification = d.n.s;
+    // A full screen, as on connecting, only brings us up to date.
+    if (!d.rz) showNotification(d.n);
+  }
   const old = cursor;
   cursor = d.cur || cursor;
   if (old) touched.add(old.r);
@@ -380,6 +387,34 @@ modeEl.addEventListener("click", () => {
   reconnect();
 });
 showMode();
+
+// Desktop notifications, which programs ask for with OSC 9 or OSC 777,
+// shown while this page isn't in front, once the user allows them.
+let lastNotification = 0;
+const notifyEl = document.getElementById("notify");
+
+function showNotification(n) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  if (document.hasFocus() && !document.hidden) return;
+  const label = nameEl.textContent || sessionID;
+  const note = new Notification(n.t || label, {body: n.b || "", tag: `tsterm-${sessionID}`});
+  note.onclick = () => { window.focus(); note.close(); };
+}
+
+function showNotifyButton() {
+  if (!("Notification" in window)) return;
+  const p = Notification.permission;
+  notifyEl.hidden = p === "granted";
+  notifyEl.textContent = p === "denied" ? "🔕 notifications blocked" : "🔔 notify me";
+  notifyEl.title = p === "denied"
+    ? "Notifications are blocked for this site in your browser's settings"
+    : "Show desktop notifications from this session while the page is in the background";
+}
+notifyEl.addEventListener("click", async () => {
+  await Notification.requestPermission();
+  showNotifyButton();
+});
+showNotifyButton();
 
 // The tab bar: the most recently active sessions, refreshed periodically,
 // and a button to start a new one.

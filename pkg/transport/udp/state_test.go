@@ -39,7 +39,12 @@ func decodeFrag(t *testing.T, b []byte) *proto.State {
 }
 
 func TestEncodeStateSmall(t *testing.T) {
-	scr := vt.New(24, 80).Snapshot()
+	term, err := vt.New(24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	scr := term.Snapshot()
 	pkts, err := EncodeState(0, 1, vt.Diff(vt.Screen{}, scr))
 	if err != nil {
 		t.Fatal(err)

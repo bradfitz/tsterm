@@ -84,12 +84,10 @@ type Client struct {
 
 // Checkpoint policy. The shim keeps all output since the last checkpoint,
 // so checkpoints bound both its memory and the replay a restarted tstermd
-// must do. A checkpoint can only be taken at a boundary between complete
-// characters and escape sequences; output that never reaches one (which
-// would take a pathological program) eventually fills the shim's buffer
-// and pauses the child.
-const (
-	checkpointBytes    = 256 << 10
+// must do. A checkpoint holds the terminal's complete state (see
+// vt.Terminal.Checkpoint), even partway through an escape sequence.
+var (
+	checkpointBytes    = uint64(256 << 10) // tests lower it
 	checkpointInterval = 5 * time.Second
 )
 
@@ -135,7 +133,6 @@ type Session struct {
 	offset     atomic.Uint64 // output offset the terminal has consumed through
 	ckptOffset atomic.Uint64
 	ckptTime   time.Time
-	scan       vt.BoundaryScanner
 }
 
 // attach makes conn the shim's controller and starts a Session for it,
@@ -148,11 +145,16 @@ func attach(conn *shim.Conn, id ID, m meta, restored bool) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	term := vt.New(max(conn.Info.Rows, 1), max(conn.Info.Cols, 1))
-	if _, err := term.Write(ckpt.Blob); err != nil {
+	rows, cols := max(conn.Info.Rows, 1), max(conn.Info.Cols, 1)
+	var term vt.Terminal
+	if len(ckpt.Blob) > 0 {
+		term, err = vt.Restore(ckpt.Blob, rows, cols)
+	} else {
+		term, err = vt.New(rows, cols)
+	}
+	if err != nil {
 		return nil, err
 	}
-	term.Replies() // a checkpoint asks nothing, but be sure
 	s := &Session{
 		id:         id,
 		token:      m.Token,
@@ -430,7 +432,6 @@ func (s *Session) pump() {
 				_ = s.conn.Input(replies)
 			}
 		}
-		s.scan.Write(out)
 		s.maybeCheckpoint()
 	}
 }
@@ -439,15 +440,19 @@ func (s *Session) pump() {
 func (s *Session) maybeCheckpoint() {
 	offset := s.offset.Load()
 	pending := offset - s.ckptOffset.Load()
-	if pending == 0 || !s.scan.AtBoundary() {
+	if pending == 0 {
 		return
 	}
 	if pending < checkpointBytes && time.Since(s.ckptTime) < checkpointInterval {
 		return
 	}
-	// Only the pump writes to the terminal, so the snapshot corresponds
-	// exactly to offset.
-	if err := s.conn.SetCheckpoint(offset, s.term.Snapshot().Repaint()); err != nil {
+	// Only the pump writes to the terminal, so the checkpoint
+	// corresponds exactly to offset.
+	ckpt, err := s.term.Checkpoint()
+	if err != nil {
+		return
+	}
+	if err := s.conn.SetCheckpoint(offset, ckpt); err != nil {
 		return // the next Read will report the broken connection
 	}
 	s.ckptOffset.Store(offset)

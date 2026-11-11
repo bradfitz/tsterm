@@ -24,8 +24,40 @@ func Diff(prev, cur Screen) ScreenDelta {
 		d.Title = cur.Title
 	}
 	d.ModesChanged = first || prev.Modes != cur.Modes
+	if d.NotificationSet = first || prev.Notification != cur.Notification; d.NotificationSet {
+		d.Notification = cur.Notification
+	}
 	d.Regions = diffRows(prev.Cells, cur.Cells, cur.Cols)
 	return d
+}
+
+// diffRows returns whole-row CellRuns for every row in cur that differs from
+// the corresponding row in prev. Rows present only in cur are emitted in
+// full; rows present only in prev are ignored (the row count is communicated
+// separately via ScreenDelta.Rows/Cols and Resized).
+func diffRows(prev, cur [][]Cell, cols int) []CellRun {
+	var out []CellRun
+	for y := range cur {
+		if y < len(prev) && rowEqual(prev[y], cur[y]) {
+			continue
+		}
+		row := make([]Cell, cols)
+		copy(row, cur[y])
+		out = append(out, CellRun{Row: y, Col: 0, Cells: row})
+	}
+	return out
+}
+
+func rowEqual(a, b []Cell) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ScreenDelta is the diff returned by Terminal.Diff between two observation
@@ -59,6 +91,9 @@ type ScreenDelta struct {
 
 	Modes        Modes `cbor:"m"`
 	ModesChanged bool  `cbor:"mc,omitempty"`
+
+	Notification    Notification `cbor:"n,omitempty"`
+	NotificationSet bool         `cbor:"ns,omitempty"`
 }
 
 // CellRun is a horizontal span of cells starting at (Row, Col) and continuing

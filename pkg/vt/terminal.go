@@ -6,9 +6,14 @@
 // viewer, recorder) consume the snapshots and deltas; they never see raw PTY
 // bytes. Making the terminal model canonical is what lets a session fan out
 // to multiple consumers without each one running its own emulator.
+//
+// The emulator is libghostty-vt; see ghostty.go.
 package vt
 
-import "io"
+import (
+	"io"
+	"strings"
+)
 
 // Terminal is the canonical server-side terminal state.
 //
@@ -49,8 +54,11 @@ type Terminal interface {
 	// is available once it returns.
 	Replies() []byte
 
-	// Close releases the terminal's resources. Afterwards the screen can
-	// still be read, but Write fails.
+	// Checkpoint returns the terminal's complete state, for Restore.
+	Checkpoint() ([]byte, error)
+
+	// Close releases the terminal's resources. Afterwards the final screen
+	// can still be read, but Write fails.
 	Close() error
 }
 
@@ -71,13 +79,31 @@ type Screen struct {
 	Title   string      `cbor:"t,omitempty"`
 	BellSeq uint64      `cbor:"b,omitempty"`
 	Modes   Modes       `cbor:"m"`
+
+	// Notification is the latest desktop notification the program asked
+	// for, if any.
+	Notification Notification `cbor:"n,omitempty"`
 }
+
+// Notification is a program's request for a desktop notification (OSC 9 or
+// OSC 777). Like BellSeq, Seq increases with each one, so that a client
+// shows each once, and ignores those from before it attached.
+type Notification struct {
+	Seq   uint64 `cbor:"s,omitempty"`
+	Title string `cbor:"t,omitempty"`
+	Body  string `cbor:"b,omitempty"`
+}
+
+// validUTF8 returns s with invalid UTF-8 replaced, since CBOR text strings
+// must be valid UTF-8 and clients reject screens with invalid ones.
+func validUTF8(s string) string { return strings.ToValidUTF8(s, "\uFFFD") }
 
 // Equal reports whether s and o describe the same terminal state: the same
 // size, cells, cursor, title, bell counter, and modes.
 func (s Screen) Equal(o Screen) bool {
 	if s.Rows != o.Rows || s.Cols != o.Cols || s.Cursor != o.Cursor ||
 		s.Title != o.Title || s.BellSeq != o.BellSeq || s.Modes != o.Modes ||
+		s.Notification != o.Notification ||
 		len(s.Cells) != len(o.Cells) {
 		return false
 	}

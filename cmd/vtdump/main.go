@@ -19,7 +19,11 @@ func main() {
 	cols := flag.Int("cols", 80, "terminal cols")
 	flag.Parse()
 
-	term := vt.New(*rows, *cols)
+	term, err := vt.New(*rows, *cols)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vtdump: %v\n", err)
+		os.Exit(1)
+	}
 	if _, err := io.Copy(term, os.Stdin); err != nil {
 		fmt.Fprintf(os.Stderr, "vtdump: read: %v\n", err)
 		os.Exit(1)

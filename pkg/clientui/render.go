@@ -120,6 +120,10 @@ func (r *Renderer) Apply(delta proto.Delta) {
 		sb.WriteString("\x07")
 		r.last.BellSeq = d.BellSeq
 	}
+	if d.NotificationSet && d.Notification.Seq > r.last.Notification.Seq {
+		writeNotification(&sb, d.Notification)
+		r.last.Notification = d.Notification
+	}
 	r.cur = d.Cursor
 	r.last.Cursor = d.Cursor
 	if d.ModesChanged {
@@ -169,6 +173,29 @@ func (r *Renderer) syncModes(sb *strings.Builder, m vt.Modes) {
 	r.local.FocusEvents = m.FocusEvents
 	r.local.Mouse = m.Mouse
 	r.local.MouseSGR = m.MouseSGR
+}
+
+// writeNotification asks the user's terminal to show n as a desktop
+// notification: with OSC 777 if it has a title, which some terminals (such
+// as Ghostty) support, and otherwise with the more widely supported OSC 9.
+// The text comes from a program, so control characters, which could end
+// the sequence early and inject others, are dropped.
+func writeNotification(sb *strings.Builder, n vt.Notification) {
+	clean := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+				return -1
+			}
+			return r
+		}, s)
+	}
+	title, body := clean(n.Title), clean(n.Body)
+	if title != "" {
+		// OSC 777 separates fields with semicolons.
+		sb.WriteString("\x1b]777;notify;" + strings.ReplaceAll(title, ";", ",") + ";" + body + "\x07")
+	} else {
+		sb.WriteString("\x1b]9;" + body + "\x07")
+	}
 }
 
 // SetStatus overlays msg in reverse video across the top row of the screen.

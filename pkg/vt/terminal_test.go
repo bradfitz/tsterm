@@ -7,6 +7,17 @@ import (
 	"unicode/utf8"
 )
 
+// newTerm returns a new terminal, closed when the test ends.
+func newTerm(tb testing.TB, rows, cols int) Terminal {
+	tb.Helper()
+	t, err := New(rows, cols)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { t.Close() })
+	return t
+}
+
 // writeString feeds s to t and fails the test if Write returns an error or a
 // short count.
 func writeString(tb testing.TB, t Terminal, s string) {
@@ -38,7 +49,7 @@ func rowText(s Screen, y int) string {
 }
 
 func TestPlainASCII(t *testing.T) {
-	term := New(2, 10)
+	term := newTerm(t, 2, 10)
 	writeString(t, term, "hello")
 	s := term.Snapshot()
 	if got := rowText(s, 0); got != "hello     " {
@@ -50,7 +61,7 @@ func TestPlainASCII(t *testing.T) {
 }
 
 func TestCRLFAdvancesRow(t *testing.T) {
-	term := New(3, 5)
+	term := newTerm(t, 3, 5)
 	writeString(t, term, "ab\r\ncd")
 	s := term.Snapshot()
 	if got := rowText(s, 0); got != "ab   " {
@@ -65,7 +76,7 @@ func TestCRLFAdvancesRow(t *testing.T) {
 }
 
 func TestCSICursorMoves(t *testing.T) {
-	term := New(5, 10)
+	term := newTerm(t, 5, 10)
 	// CUP to row 3, col 5, then write "X".
 	writeString(t, term, "\x1b[3;5HX")
 	s := term.Snapshot()
@@ -78,7 +89,7 @@ func TestCSICursorMoves(t *testing.T) {
 }
 
 func TestEraseInLine(t *testing.T) {
-	term := New(1, 8)
+	term := newTerm(t, 1, 8)
 	// Fill the row, then erase from column 4 to end.
 	writeString(t, term, "ABCDEFGH")
 	writeString(t, term, "\x1b[1;5H\x1b[K") // CUP to (1,5), then EL
@@ -89,7 +100,7 @@ func TestEraseInLine(t *testing.T) {
 }
 
 func TestEraseInDisplay(t *testing.T) {
-	term := New(2, 4)
+	term := newTerm(t, 2, 4)
 	writeString(t, term, "abcd\r\nefgh")
 	writeString(t, term, "\x1b[H\x1b[2J") // CUP home, ED 2 (whole screen)
 	s := term.Snapshot()
@@ -101,7 +112,7 @@ func TestEraseInDisplay(t *testing.T) {
 }
 
 func TestSGRAttributesAndColors(t *testing.T) {
-	term := New(1, 10)
+	term := newTerm(t, 1, 10)
 	// Bold + reverse + red indexed + truecolor on background.
 	writeString(t, term, "\x1b[1;7;31;48;2;10;20;30mA\x1b[0mB")
 	s := term.Snapshot()
@@ -122,7 +133,7 @@ func TestSGRAttributesAndColors(t *testing.T) {
 }
 
 func TestOSCTitle(t *testing.T) {
-	term := New(1, 5)
+	term := newTerm(t, 1, 5)
 	writeString(t, term, "\x1b]2;hello world\x07")
 	s := term.Snapshot()
 	if s.Title != "hello world" {
@@ -140,7 +151,7 @@ func TestOSCTitle(t *testing.T) {
 }
 
 func TestBellIncrements(t *testing.T) {
-	term := New(1, 5)
+	term := newTerm(t, 1, 5)
 	before := term.Snapshot().BellSeq
 	writeString(t, term, "\x07")
 	if got := term.Snapshot().BellSeq; got <= before {
@@ -149,7 +160,7 @@ func TestBellIncrements(t *testing.T) {
 }
 
 func TestAltScreenMode(t *testing.T) {
-	term := New(2, 4)
+	term := newTerm(t, 2, 4)
 	writeString(t, term, "\x1b[?1049h")
 	if !term.Modes().AltScreen {
 		t.Errorf("Modes().AltScreen = false after DECSET 1049")
@@ -164,7 +175,7 @@ func TestAltScreenMode(t *testing.T) {
 }
 
 func TestBracketedPasteMode(t *testing.T) {
-	term := New(1, 4)
+	term := newTerm(t, 1, 4)
 	writeString(t, term, "\x1b[?2004h")
 	if !term.Modes().BracketedPaste {
 		t.Errorf("BracketedPaste = false after enable")
@@ -176,7 +187,7 @@ func TestBracketedPasteMode(t *testing.T) {
 }
 
 func TestWideCharacter(t *testing.T) {
-	term := New(1, 4)
+	term := newTerm(t, 1, 4)
 	// CJK fullwidth character occupies two columns.
 	writeString(t, term, "中A")
 	s := term.Snapshot()
@@ -192,7 +203,7 @@ func TestWideCharacter(t *testing.T) {
 }
 
 func TestResizeReportsResized(t *testing.T) {
-	term := New(3, 5)
+	term := newTerm(t, 3, 5)
 	_ = term.Diff() // drain initial delta
 	term.Resize(4, 8)
 	d := term.Diff()
@@ -208,7 +219,7 @@ func TestResizeReportsResized(t *testing.T) {
 }
 
 func TestDiffChurnQuiescence(t *testing.T) {
-	term := New(2, 3)
+	term := newTerm(t, 2, 3)
 	writeString(t, term, "ab\r\ncd")
 	_ = term.Diff() // bootstrap delta
 	d := term.Diff()
@@ -227,7 +238,7 @@ func TestDiffChurnQuiescence(t *testing.T) {
 }
 
 func TestFirstDiffBootstraps(t *testing.T) {
-	term := New(2, 4)
+	term := newTerm(t, 2, 4)
 	writeString(t, term, "hi")
 	d := term.Diff()
 	if len(d.Regions) != 2 {
@@ -239,7 +250,7 @@ func TestFirstDiffBootstraps(t *testing.T) {
 }
 
 func TestScreenEqual(t *testing.T) {
-	term := New(3, 10)
+	term := newTerm(t, 3, 10)
 	a := term.Snapshot()
 	if !a.Equal(term.Snapshot()) {
 		t.Fatal("identical snapshots not Equal")
@@ -259,8 +270,7 @@ func TestScreenEqual(t *testing.T) {
 }
 
 func TestQueriesAreAnswered(t *testing.T) {
-	term := New(5, 20)
-	defer term.Close()
+	term := newTerm(t, 5, 20)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -293,24 +303,22 @@ func TestQueriesAreAnswered(t *testing.T) {
 }
 
 func TestWriteAfterClose(t *testing.T) {
-	term := New(2, 10)
-	term.Write([]byte("hi"))
-	term.Close()
-	done := make(chan struct{})
-	go func() { term.Write([]byte("\x1b[6n")); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Write after Close blocked")
+	term, err := New(2, 10)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(term.Snapshot().Cells[0][0].Grapheme, "h") {
-		t.Error("screen unreadable after Close")
+	term.Write([]byte("final"))
+	term.Close()
+	if _, err := term.Write([]byte("hi")); err == nil {
+		t.Error("Write after Close succeeded")
+	}
+	if got := rowText(term.Snapshot(), 0); !strings.HasPrefix(got, "final") {
+		t.Errorf("screen after Close = %q, want the final screen", got)
 	}
 }
 
 func TestMouseModes(t *testing.T) {
-	term := New(2, 10)
-	defer term.Close()
+	term := newTerm(t, 2, 10)
 	check := func(when string, want Modes) {
 		t.Helper()
 		m := term.Modes()
@@ -338,7 +346,7 @@ func TestTitleWith9CByte(t *testing.T) {
 		"\x1b]0;" + title + "\x07",
 		"\x1b]2;" + title + "\x1b\\",
 	} {
-		term := New(2, 20)
+		term := newTerm(t, 2, 20)
 		// Split across writes, to exercise the cross-call tracking.
 		mid := len(osc) / 2
 		term.Write([]byte(osc[:mid]))
@@ -358,8 +366,7 @@ func TestTitleWith9CByte(t *testing.T) {
 }
 
 func TestHyperlinkWith9CByte(t *testing.T) {
-	term := New(1, 10)
-	defer term.Close()
+	term := newTerm(t, 1, 10)
 	const url = "https://example.com/✓" // ✓ is E2 9C 93
 	term.Write([]byte("\x1b]8;;" + url + "\x1b\\L\x1b]8;;\x1b\\"))
 	if got := term.Snapshot().Cells[0][0].Link; got != url {
@@ -368,8 +375,7 @@ func TestHyperlinkWith9CByte(t *testing.T) {
 }
 
 func TestSnapshotStringsAreValidUTF8(t *testing.T) {
-	term := New(1, 10)
-	defer term.Close()
+	term := newTerm(t, 1, 10)
 	term.Write([]byte("\x1b]2;bad\xe2title\x07a\xffb"))
 	s := term.Snapshot()
 	if !utf8.ValidString(s.Title) {
