@@ -38,7 +38,16 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   paste, cursor-key, and focus modes onto the local terminal.
 - **Web UI** (`http://HOST:2200/`, owner only): session list with renaming
   and creation; per-session viewer with typing (on by default), view-only
-  mode, size-owning mode, snap-to-fit, and tabs of recently active sessions.
+  mode, size-owning mode, snap-to-fit, mouse input, and tabs of recently
+  active sessions.
+- **HTTPS** on the same port as HTTP (connections are sniffed: TLS starts
+  with 0x16), with the node's certificate from tailscaled, when the tailnet
+  has HTTPS certificates enabled (the node's MagicDNS name is in the
+  Status's `CertDomains`). Cleartext requests for web pages redirect to
+  `https://<MagicDNS name>:<port>/...`, since browsers allow notifications
+  and other features only on secure pages; the API stays on cleartext (it's
+  inside WireGuard) for the CLI. Live on braid at
+  https://braid.corp.ts.net:2200/.
 - **Sessions**: IDs are `pty-` + `crypto/rand.Text()`; optional names (see
   "Naming"). Every session's TERM is xterm-256color (tstermd's emulator),
   and LANG defaults to C.UTF-8.

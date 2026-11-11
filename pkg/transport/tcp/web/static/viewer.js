@@ -484,6 +484,14 @@ function showNotification(n) {
 }
 
 function showNotifyButton() {
+  if (!window.isSecureContext) {
+    // Browsers offer notifications only to HTTPS pages.
+    notifyEl.hidden = false;
+    notifyEl.disabled = true;
+    notifyEl.textContent = "🔕 notifications need HTTPS";
+    notifyEl.title = "Browsers allow notifications only on HTTPS pages. Enable HTTPS certificates for your tailnet (DNS settings in the Tailscale admin console), and tstermd will serve HTTPS.";
+    return;
+  }
   if (!("Notification" in window)) return;
   const p = Notification.permission;
   notifyEl.hidden = p === "granted";

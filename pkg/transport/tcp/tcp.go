@@ -8,6 +8,7 @@ package tcp
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json/v2"
 	"errors"
 	"io"
@@ -31,6 +32,18 @@ type Server struct {
 	Auth      *auth.SelfUser
 	UDPPort   int
 	WSHandler http.Handler
+
+	// TLS, if non-nil, configures HTTPS, served on the same port as
+	// cleartext HTTP (see Serve).
+	TLS *tls.Config
+
+	// HTTPSHost, if non-empty, is the host name, typically the node's
+	// MagicDNS name, that TLS serves a certificate for. Cleartext requests
+	// for the web UI's pages are redirected there, on the same port:
+	// browsers allow some features, such as notifications, only over
+	// HTTPS. The API isn't redirected; it's already encrypted by
+	// WireGuard, and its clients need no certificate.
+	HTTPSHost string
 }
 
 // Handler returns the assembled control-plane handler with auth applied.
@@ -47,11 +60,41 @@ func (s *Server) Handler() http.Handler {
 	if s.WSHandler != nil {
 		mux.Handle("GET /v1/sessions/{id}/ws", s.WSHandler)
 	}
-	return s.Auth.HTTPMiddleware(mux)
+	return s.redirectToHTTPS(s.Auth.HTTPMiddleware(mux))
 }
 
-// Serve runs the control plane on ln until ctx is canceled.
+// isWebPage reports whether path is one of the web UI's pages or assets,
+// as opposed to the API.
+func isWebPage(path string) bool {
+	return path == "/" || strings.HasPrefix(path, "/s/") || strings.HasPrefix(path, "/static/")
+}
+
+// redirectToHTTPS wraps h to redirect cleartext requests for web pages to
+// HTTPSHost, if set.
+func (s *Server) redirectToHTTPS(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil || s.HTTPSHost == "" || r.Method != "GET" || !isWebPage(r.URL.Path) {
+			h.ServeHTTP(w, r)
+			return
+		}
+		u := *r.URL
+		u.Scheme = "https"
+		u.Host = s.HTTPSHost
+		if port := localPort(r.Context()); port != "" && port != "443" {
+			u.Host = net.JoinHostPort(s.HTTPSHost, port)
+		}
+		// Temporary, in case HTTPS is later turned off for the tailnet.
+		http.Redirect(w, r, u.String(), http.StatusFound)
+	})
+}
+
+// Serve runs the control plane on ln until ctx is canceled. If s.TLS is
+// set, it serves both HTTPS and cleartext HTTP on ln, telling them apart by
+// each connection's first byte.
 func Serve(ctx context.Context, ln net.Listener, s *Server) error {
+	if s.TLS != nil {
+		ln = newSniffListener(ln, s.TLS)
+	}
 	srv := &http.Server{Handler: s.Handler()}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()

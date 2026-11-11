@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,7 +27,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -111,6 +114,19 @@ func main() {
 		Auth:      a,
 		UDPPort:   *udpPort,
 		WSHandler: wsSrv.Handler(),
+	}
+	if fqdn, ok := httpsName(ctx, lc); ok {
+		tcpSrv.TLS = tlsConfig(lc, fqdn)
+		tcpSrv.HTTPSHost = fqdn
+		log.Printf("tstermd: web UI at https://%s:%d/", fqdn, *port)
+		// Get the certificate now: the first one can take a while.
+		go func() {
+			if _, _, err := lc.CertPair(ctx, fqdn); err != nil {
+				log.Printf("tstermd: getting a certificate for %s: %v", fqdn, err)
+			}
+		}()
+	} else {
+		log.Printf("tstermd: HTTPS certificates aren't enabled for this tailnet; serving the web UI over HTTP only")
 	}
 	udpSrv := &udp.Server{
 		Manager: mgr,
@@ -230,6 +246,35 @@ func setupNet(
 		pcs = append(pcs, pc)
 	}
 	return lc, lns, pcs, closeNet, nil
+}
+
+// httpsName returns the node's MagicDNS name, if the tailnet lets it have
+// a certificate (HTTPS certificates are enabled in the tailnet's DNS
+// settings).
+func httpsName(ctx context.Context, lc *local.Client) (string, bool) {
+	st, err := lc.Status(ctx)
+	if err != nil || st.Self == nil {
+		return "", false
+	}
+	fqdn := strings.TrimSuffix(st.Self.DNSName, ".")
+	return fqdn, fqdn != "" && slices.Contains(st.CertDomains, fqdn)
+}
+
+// tlsConfig returns a TLS config serving fqdn's certificate from
+// tailscaled.
+func tlsConfig(lc *local.Client, fqdn string) *tls.Config {
+	return &tls.Config{
+		// HTTP/1.1 only: browsers' WebSockets need it, and the web UI
+		// gains nothing from HTTP/2.
+		NextProtos: []string{"http/1.1"},
+		GetCertificate: func(hi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			// fqdn's is the only certificate there is; clients that
+			// connect by IP address or by short name get it too.
+			h := *hi
+			h.ServerName = fqdn
+			return lc.GetCertificate(&h)
+		},
+	}
 }
 
 // pickBindAddrs returns the addresses on which the daemon should listen.
