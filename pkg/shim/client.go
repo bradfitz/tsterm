@@ -140,6 +140,18 @@ func (c *Conn) Release() error { return c.write(shimproto.TypeRelease, nil) }
 // Close closes the connection. The shim and its child keep running.
 func (c *Conn) Close() error { return c.c.Close() }
 
+// CloseWrite closes the sending side of the connection. The shim handles
+// everything sent before it, then closes the connection, so a subsequent
+// Read returns an error once the shim is done.
+func (c *Conn) CloseWrite() error {
+	if uc, ok := c.c.(*net.UnixConn); ok {
+		c.wmu.Lock()
+		defer c.wmu.Unlock()
+		return uc.CloseWrite()
+	}
+	return c.c.Close()
+}
+
 func (c *Conn) write(t shimproto.Type, payload []byte) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()

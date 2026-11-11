@@ -112,7 +112,8 @@ type Session struct {
 	replayEnd  uint64 // output up to this offset predates attaching
 	term       vt.Terminal
 
-	done chan struct{}
+	done     chan struct{}
+	pumpDone chan struct{} // closed when the pump returns
 
 	mu       sync.Mutex
 	watchers map[uint64]*Watcher
@@ -163,6 +164,7 @@ func attach(conn *shim.Conn, id ID, m meta, restored bool) (*Session, error) {
 		replayEnd:  replayEnd(conn, restored),
 		term:       term,
 		done:       make(chan struct{}),
+		pumpDone:   make(chan struct{}),
 		watchers:   map[uint64]*Watcher{},
 		ckptTime:   time.Now(),
 	}
@@ -365,10 +367,24 @@ func (s *Session) Close() error {
 	return s.conn.Close()
 }
 
+// detachTimeout bounds how long Detach waits for the shim to finish
+// handling what was sent to it.
+const detachTimeout = 2 * time.Second
+
 // Detach disconnects from the shim without ending the session, which keeps
 // running for a future tstermd to restore. The Session is unusable after.
+//
+// Detach waits for the shim to handle everything already sent to it, such
+// as a rename stored in its metadata, so that a tstermd that starts next
+// finds it.
 func (s *Session) Detach() {
 	s.detached.Store(true)
+	if s.conn.CloseWrite() == nil {
+		select {
+		case <-s.pumpDone: // the shim closed its end
+		case <-time.After(detachTimeout):
+		}
+	}
 	s.conn.Close()
 	s.term.Close()
 }
@@ -377,6 +393,7 @@ func (s *Session) Detach() {
 // the canonical terminal, notifies watchers after each batch, checkpoints,
 // and closes Done when the child exits.
 func (s *Session) pump() {
+	defer close(s.pumpDone)
 	for {
 		out, exited, err := s.conn.Read()
 		if err != nil {
