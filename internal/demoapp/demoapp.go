@@ -13,6 +13,7 @@
 // commands:
 //
 //	n  ask for desktop notifications (OSC 777, then OSC 9)
+//	N  the same, after NotifyDelay, to try them while the viewer is unfocused
 //	b  ring the bell
 //	c  cycle the cursor style
 //	t  start or stop animating the title
@@ -60,6 +61,9 @@ const (
 	Notify9Body = "an OSC 9 notification from the tsterm demo"
 )
 
+// NotifyDelay is how long the N command waits before notifying.
+const NotifyDelay = 5 * time.Second
+
 // EnvVar, when set, makes MainIfRequested run the program.
 const EnvVar = "TSTERM_DEMO"
 
@@ -104,6 +108,7 @@ type app struct {
 	marks       [][2]int // clicked cells, 0-based x, y
 	logs        []string
 	scrolls     int
+	notifyAt    <-chan time.Time // pending N command, or nil
 }
 
 func run(in *os.File, out io.Writer) int {
@@ -195,12 +200,22 @@ wait:
 			}
 			a.log(fmt.Sprintf("resized to %dx%d", a.cols, a.rows))
 			a.redraw()
+		case <-a.notifyAt:
+			a.notifyAt = nil
+			a.notify()
 		case <-tick:
 			a.titleFrame++
 			spin := []string{"✳", "✶", "✻", "✽", "✻", "✶"}
 			fmt.Fprintf(a.out, "\x1b]2;%s %s\x07", spin[a.titleFrame%len(spin)], Title)
 		}
 	}
+}
+
+// notify asks for desktop notifications.
+func (a *app) notify() {
+	fmt.Fprint(a.out, "\x1b]777;notify;"+NotifyTitle+";"+NotifyBody+"\x07")
+	fmt.Fprint(a.out, "\x1b]9;"+Notify9Body+"\x07")
+	a.log("sent desktop notifications")
 }
 
 // quit restores the terminal and the main screen.
@@ -236,9 +251,11 @@ func (a *app) handle(ev event) bool {
 		case "q":
 			return true
 		case "n":
-			fmt.Fprint(a.out, "\x1b]777;notify;"+NotifyTitle+";"+NotifyBody+"\x07")
-			fmt.Fprint(a.out, "\x1b]9;"+Notify9Body+"\x07")
-			a.log("sent desktop notifications")
+			a.notify()
+			return false
+		case "N":
+			a.notifyAt = time.After(NotifyDelay)
+			a.log(fmt.Sprintf("notifying in %v; switch away to see a system notification", NotifyDelay))
 			return false
 		case "b":
 			fmt.Fprint(a.out, "\x07")
@@ -292,7 +309,7 @@ func (a *app) handle(ev event) bool {
 
 func (a *app) redraw() {
 	fmt.Fprint(a.out, "\x1b[r\x1b[0m\x1b[H\x1b[2J")
-	fmt.Fprintf(a.out, "\x1b[1;1H\x1b[1;97;44m%s\x1b[K\x1b[0m", a.fit(" "+AltScreenText+" · n notify · b bell · c cursor · t title · s log · click · paste · q quit"))
+	fmt.Fprintf(a.out, "\x1b[1;1H\x1b[1;97;44m%s\x1b[K\x1b[0m", a.fit(" "+AltScreenText+" · n/N notify now/in 5s · b bell · c cursor · t title · s log · click · paste · q quit"))
 	a.drawStatus()
 	a.drawFeatures()
 	top, bottom := LogRegion(a.rows)

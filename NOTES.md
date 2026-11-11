@@ -41,7 +41,9 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   mode, auto-fit (size-owning) mode, mouse input, and tabs of recently
   active sessions. Auto-fit fills the whole terminal area; its toggle, and a
   one-time fit when the terminal is too big to see whole, pop up near the
-  area's bottom-right corner (on touch devices, a key in the extra-keys bar). Mobile friendly: typing goes through a hidden text
+  area's bottom-right corner (on touch devices, a key in the extra-keys bar);
+  when the terminal is smaller than the area, a ⇲ toggle also sits in the
+  checkerboard at the terminal's own corner. Mobile friendly: typing goes through a hidden text
   field, which is how the mobile keyboard appears (a ⌨ button shows and
   hides it) and how IME and autocorrect composition arrive (sent live, as
   diffs); touch devices get an extra-keys bar (Esc, Tab, sticky Ctrl and
@@ -105,7 +107,8 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   stripped). The web viewer shows them as toasts while the page is in
   front, and with the browser's Notification API otherwise (once allowed;
   needs HTTPS). Being state, notifications sent within one screen update
-  coalesce to the last. The viewer's bell beeps (Web Audio, unlocked by the
+  coalesce to the last. The demo's `N` key notifies after 5 seconds, to try
+  the unfocused path. The viewer's bell beeps (Web Audio, unlocked by the
   first key press or click) and flashes the screen.
 - **Performance.** Writes: 132 MB/s (charm: 15). Snapshot of 200×60:
   1.4 ms (charm: 0.7); fix by snapshotting only dirty rows (the render state

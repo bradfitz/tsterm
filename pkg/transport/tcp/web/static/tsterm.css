@@ -34,7 +34,17 @@ main.oob {
   flex: 1; min-height: 0; overflow: auto;
   background: repeating-conic-gradient(#262626 0 25%, #1a1a1a 0 50%) 0 0 / 1ch 1ch;
 }
-.term { display: inline-block; vertical-align: top; }
+.term { position: relative; display: inline-block; vertical-align: top; }
+
+/* The auto-fit handle just past the terminal's bottom-right corner, out in
+   the checkerboard, when there's room for it there. */
+#cornerhandle {
+  position: absolute; right: -2ch; bottom: -1.2em; width: 2ch; height: 1.2em;
+  padding: 0; border: 0; border-radius: 0 0 .3em 0;
+  font: inherit; line-height: 1.2em; color: #777; background: #333; cursor: pointer;
+}
+#cornerhandle:hover { color: #fff; }
+#cornerhandle.on { color: #000; background: #8c8; }
 
 /* The fit bar, which pops up at the terminal area's bottom-right corner
    when the pointer is near: auto-fit (green when on) and a one-time fit. */

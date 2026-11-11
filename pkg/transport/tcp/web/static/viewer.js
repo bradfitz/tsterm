@@ -489,7 +489,7 @@ window.addEventListener("blur", () => { if (modes.f) send({input: "\x1b[O"}); })
 
 // Buttons must not take the focus: a focused button would turn a typed
 // Enter or space into a click.
-for (const b of document.querySelectorAll("header button, #fitbar button")) {
+for (const b of document.querySelectorAll("header button, #fitbar button, #cornerhandle")) {
   b.addEventListener("mousedown", (ev) => ev.preventDefault());
 }
 
@@ -528,7 +528,17 @@ function fit() {
 }
 
 const areaEl = document.querySelector("main");
+const cornerEl = document.getElementById("cornerhandle");
 const fitBarEl = document.getElementById("fitbar");
+
+// updateCornerHandle shows the handle at the terminal's corner if the
+// checkerboard has room for it: two columns to the right and a row below.
+function updateCornerHandle() {
+  const [cw, ch] = cellSize();
+  const room = areaEl.clientWidth - screenEl.offsetWidth >= 2 * cw &&
+    areaEl.clientHeight - screenEl.offsetHeight >= ch;
+  cornerEl.hidden = !writable || !room;
+}
 const autoFitEl = document.getElementById("autofit");
 const fitOnceEl = document.getElementById("fitonce");
 
@@ -585,10 +595,13 @@ fitOnceEl.addEventListener("click", () => {
 // mobile keyboard comes and goes.
 let fitTimer;
 new ResizeObserver(() => {
+  updateCornerHandle();
   if (!sizeOwner) return;
   clearTimeout(fitTimer);
   fitTimer = setTimeout(fit, 100);
 }).observe(areaEl);
+// The terminal changes size too, when the session is resized.
+new ResizeObserver(updateCornerHandle).observe(screenEl);
 
 // The view-only switch.
 const modeEl = document.getElementById("mode");
@@ -596,6 +609,7 @@ function showMode() {
   modeEl.textContent = writable ? "⌨ typing" : "👁 view-only";
   modeEl.title = writable ? "Click to stop typing into the session" : "Click to type into the session";
   for (const b of document.querySelectorAll(".autofit")) b.hidden = !writable;
+  updateCornerHandle();
 }
 modeEl.addEventListener("click", () => {
   writable = !writable;
