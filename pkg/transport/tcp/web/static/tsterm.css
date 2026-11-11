@@ -44,6 +44,17 @@ main.oob {
 }
 #sizehandle:hover { color: #fff; }
 #sizehandle.on { color: #000; background: #8c8; }
+
+/* The snap-to-fit button, shown at the bottom-right corner of the window
+   when the terminal is too big to see whole and the pointer is near. */
+#snap {
+  position: fixed; right: 0; bottom: 0;
+  font: .85rem system-ui, sans-serif; padding: .3rem .6rem;
+  color: #000; background: #8c8; border: 0; border-radius: .4rem 0 0 0;
+  cursor: nwse-resize; box-shadow: 0 0 .5rem #000;
+  opacity: 0; pointer-events: none; transition: opacity .15s;
+}
+#snap.visible { opacity: 1; pointer-events: auto; }
 .screen:focus { outline: none; }
 .screen {
   margin: 0; padding: 0;

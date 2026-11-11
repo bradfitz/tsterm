@@ -286,7 +286,7 @@ window.addEventListener("blur", () => { if (modes.f) send({input: "\x1b[O"}); })
 
 // Buttons must not take the focus: a focused button would turn a typed
 // Enter or space into a click.
-for (const b of document.querySelectorAll("header button, #sizehandle")) {
+for (const b of document.querySelectorAll("header button, #sizehandle, #snap")) {
   b.addEventListener("mousedown", (ev) => ev.preventDefault());
 }
 
@@ -327,6 +327,37 @@ function setSizeOwner(on) {
 }
 handleEl.addEventListener("click", () => setSizeOwner(!sizeOwner));
 setSizeOwner(sizeOwner);
+
+// The snap button: when the terminal is bigger than the window, so that
+// its corner handle is out of view, pointing near the window's bottom-right
+// corner offers a one-time resize to fit, without resizing the window.
+const snapEl = document.getElementById("snap");
+const areaEl = document.querySelector("main");
+const snapZone = 80; // pixels from the corner
+
+function overflowing() {
+  return areaEl.scrollWidth > areaEl.clientWidth || areaEl.scrollHeight > areaEl.clientHeight;
+}
+
+function showSnap(show) {
+  if (show) {
+    // Sit inside any scrollbars.
+    snapEl.style.right = `${areaEl.offsetWidth - areaEl.clientWidth}px`;
+    snapEl.style.bottom = `${areaEl.offsetHeight - areaEl.clientHeight}px`;
+  }
+  snapEl.classList.toggle("visible", show);
+}
+
+document.addEventListener("mousemove", (ev) => {
+  const r = areaEl.getBoundingClientRect();
+  const near = ev.clientX > r.right - snapZone && ev.clientY > r.bottom - snapZone;
+  showSnap(writable && near && overflowing());
+});
+document.addEventListener("mouseleave", () => showSnap(false));
+snapEl.addEventListener("click", () => {
+  fit();
+  showSnap(false);
+});
 
 let fitTimer;
 window.addEventListener("resize", () => {
