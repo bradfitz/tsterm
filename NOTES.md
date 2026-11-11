@@ -38,8 +38,10 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   paste, cursor-key, and focus modes onto the local terminal.
 - **Web UI** (`http://HOST:2200/`, owner only): session list with renaming
   and creation; per-session viewer with typing (on by default), view-only
-  mode, size-owning mode, snap-to-fit, mouse input, and tabs of recently
-  active sessions. Mobile friendly: typing goes through a hidden text
+  mode, auto-fit (size-owning) mode, mouse input, and tabs of recently
+  active sessions. Auto-fit fills the whole terminal area; its toggle, and a
+  one-time fit when the terminal is too big to see whole, pop up near the
+  area's bottom-right corner (on touch devices, a key in the extra-keys bar). Mobile friendly: typing goes through a hidden text
   field, which is how the mobile keyboard appears (a ⌨ button shows and
   hides it) and how IME and autocorrect composition arrive (sent live, as
   diffs); touch devices get an extra-keys bar (Esc, Tab, sticky Ctrl and

@@ -489,14 +489,14 @@ window.addEventListener("blur", () => { if (modes.f) send({input: "\x1b[O"}); })
 
 // Buttons must not take the focus: a focused button would turn a typed
 // Enter or space into a click.
-for (const b of document.querySelectorAll("header button, #sizehandle, #snap")) {
+for (const b of document.querySelectorAll("header button, #fitbar button")) {
   b.addEventListener("mousedown", (ev) => ev.preventDefault());
 }
 
-// Size-owning mode: the session is resized to fill the browser window,
-// whenever the window changes size. The handle at the terminal's corner
-// turns it on and off.
-const handleEl = document.getElementById("sizehandle");
+// Size-owning ("auto-fit") mode: the session is resized to fill the
+// terminal area, whenever that changes size. A control pops up near the
+// area's bottom-right corner (see the fit bar, below); on touch devices,
+// without hover, it's a key in the extra-keys bar.
 
 // cellSize measures a character cell of the terminal's font. The result is
 // cached until the window resizes, since mouse events need it constantly.
@@ -518,71 +518,84 @@ function measureCell() {
   return [w, h];
 }
 
+// fit resizes the session to the most columns and rows the terminal area
+// holds.
 function fit() {
   const [cw, ch] = cellSize();
-  const area = document.querySelector("main");
-  // Leave a margin for the handle, so it stays in view.
-  const cols = Math.max(10, Math.floor(area.clientWidth / cw) - 3);
-  const rows = Math.max(3, Math.floor(area.clientHeight / ch) - 2);
+  const cols = Math.max(10, Math.floor(areaEl.clientWidth / cw));
+  const rows = Math.max(3, Math.floor(areaEl.clientHeight / ch));
   if (rows !== numRows || cols !== numCols) send({resize: {rows, cols}});
 }
 
+const areaEl = document.querySelector("main");
+const fitBarEl = document.getElementById("fitbar");
+const autoFitEl = document.getElementById("autofit");
+const fitOnceEl = document.getElementById("fitonce");
+
 function setSizeOwner(on) {
   sizeOwner = on;
-  handleEl.classList.toggle("on", on);
-  handleEl.title = on
-    ? "Sizing the session to this window. Click to stop."
-    : "Click to size the session to this window.";
+  for (const b of document.querySelectorAll(".autofit")) {
+    b.classList.toggle("on", on);
+    b.title = on
+      ? "Auto-fit is on: the session is sized to this window. Click to stop."
+      : "Auto-fit is off. Click to size the session to this window, and keep it so.";
+  }
   showStatus();
   if (on) fit();
 }
-handleEl.addEventListener("click", () => setSizeOwner(!sizeOwner));
+for (const b of document.querySelectorAll(".autofit")) {
+  b.addEventListener("click", () => setSizeOwner(!sizeOwner));
+}
 setSizeOwner(sizeOwner);
 
-// The snap button: when the terminal is bigger than the window, so that
-// its corner handle is out of view, pointing near the window's bottom-right
-// corner offers a one-time resize to fit, without resizing the window.
-const snapEl = document.getElementById("snap");
-const areaEl = document.querySelector("main");
-const snapZone = 80; // pixels from the corner
+// The fit bar pops up when the pointer nears the terminal area's
+// bottom-right corner: auto-fit on and off, and, when the terminal is too
+// big to see whole, a one-time fit that leaves auto-fit off.
+const fitZone = 80; // pixels from the corner
 
 function overflowing() {
   return areaEl.scrollWidth > areaEl.clientWidth || areaEl.scrollHeight > areaEl.clientHeight;
 }
 
-function showSnap(show) {
+function showFitBar(show) {
   if (show) {
-    // Sit inside any scrollbars.
-    snapEl.style.right = `${areaEl.offsetWidth - areaEl.clientWidth}px`;
-    snapEl.style.bottom = `${areaEl.offsetHeight - areaEl.clientHeight}px`;
+    // Sit at the area's corner, inside any scrollbars.
+    const r = areaEl.getBoundingClientRect();
+    fitBarEl.style.right = `${window.innerWidth - r.right + (areaEl.offsetWidth - areaEl.clientWidth)}px`;
+    fitBarEl.style.bottom = `${window.innerHeight - r.bottom + (areaEl.offsetHeight - areaEl.clientHeight)}px`;
+    fitOnceEl.hidden = !overflowing();
   }
-  snapEl.classList.toggle("visible", show);
+  fitBarEl.classList.toggle("visible", show);
 }
 
 document.addEventListener("mousemove", (ev) => {
   const r = areaEl.getBoundingClientRect();
-  const near = ev.clientX > r.right - snapZone && ev.clientY > r.bottom - snapZone;
-  showSnap(writable && near && overflowing());
+  const near = ev.clientX > r.right - fitZone && ev.clientX < r.right &&
+    ev.clientY > r.bottom - fitZone && ev.clientY < r.bottom;
+  showFitBar(writable && near);
 });
-document.addEventListener("mouseleave", () => showSnap(false));
-snapEl.addEventListener("click", () => {
+document.addEventListener("mouseleave", () => showFitBar(false));
+fitOnceEl.addEventListener("click", () => {
   fit();
-  showSnap(false);
+  showFitBar(false);
 });
 
+// Refit whenever the terminal area changes size, which happens not only
+// when the window resizes but when the tabs load, the header wraps, or a
+// mobile keyboard comes and goes.
 let fitTimer;
-window.addEventListener("resize", () => {
+new ResizeObserver(() => {
   if (!sizeOwner) return;
   clearTimeout(fitTimer);
   fitTimer = setTimeout(fit, 100);
-});
+}).observe(areaEl);
 
 // The view-only switch.
 const modeEl = document.getElementById("mode");
 function showMode() {
   modeEl.textContent = writable ? "⌨ typing" : "👁 view-only";
   modeEl.title = writable ? "Click to stop typing into the session" : "Click to type into the session";
-  handleEl.hidden = !writable;
+  for (const b of document.querySelectorAll(".autofit")) b.hidden = !writable;
 }
 modeEl.addEventListener("click", () => {
   writable = !writable;
@@ -636,7 +649,6 @@ if (window.visualViewport) {
   const fitViewport = () => {
     document.body.style.height = `${visualViewport.height}px`;
     cachedCellSize = null;
-    if (sizeOwner) fit();
   };
   visualViewport.addEventListener("resize", fitViewport);
   fitViewport();

@@ -15,9 +15,10 @@
 <button id="mode" type="button"></button>
 </header>
 <nav id="tabs" aria-label="Recently active sessions"></nav>
-<main class="oob"><div class="term"><pre id="screen" class="screen" data-id="{{.ID}}"></pre><button id="sizehandle" type="button" aria-label="Size to window">⇲</button></div></main>
+<main class="oob"><div class="term"><pre id="screen" class="screen" data-id="{{.ID}}"></pre></div></main>
 <nav id="extrakeys" class="mobile" aria-label="Extra keys">
 <button type="button" class="kbdtoggle" aria-label="Keyboard">⌨</button>
+<button type="button" class="autofit" aria-label="Auto-fit">⇲</button>
 <button type="button" data-key="esc">Esc</button>
 <button type="button" data-key="tab">Tab</button>
 <button type="button" data-key="ctrl" class="sticky">Ctrl</button>
@@ -32,7 +33,10 @@
 <button type="button" data-key="dash">-</button>
 </nav>
 <textarea id="kbd" aria-label="Terminal input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" rows="1"></textarea>
-<button id="snap" type="button" title="Resize the session once to fit this window">⇲ fit</button>
+<div id="fitbar">
+<button id="fitonce" type="button" title="Resize the session once to fit this window">fit once</button>
+<button id="autofit" class="autofit" type="button">⇲ auto-fit</button>
+</div>
 <div id="toasts" aria-live="polite"></div>
 <script src="/static/common.js"></script>
 <script src="/static/viewer.js"></script>
