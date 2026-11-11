@@ -233,9 +233,14 @@ connect();
 // it, following xterm: modifiers on special keys as CSI 1;M sequences,
 // Ctrl+letter as a control character, Alt as an ESC prefix. Keys with the
 // Meta (Cmd) key are left to the browser, for copy and paste.
+//
+// ev may be a KeyboardEvent, or any object with its key and modifier
+// fields, as from the extra-keys bar.
 function keyBytes(ev) {
   if (ev.isComposing || ev.metaKey) return null;
   const k = ev.key;
+  // Ctrl-Shift-C and Ctrl-Shift-V copy and paste, as in desktop terminals.
+  if (ev.ctrlKey && ev.shiftKey && (k === "C" || k === "V")) return null;
   const mod = (ev.shiftKey ? 1 : 0) | (ev.altKey ? 2 : 0) | (ev.ctrlKey ? 4 : 0);
   // cursor returns a cursor-style key: SS3 in application cursor mode.
   const cursorKey = (final) =>
@@ -277,16 +282,121 @@ function keyBytes(ev) {
   return k;
 }
 
-// Typing goes to the session wherever the page's focus is, except in text
-// fields (such as for renaming).
-const inTextField = (el) => el instanceof Element && el.closest("input, textarea, select");
+// Typing. Text arrives through kbdEl, a hidden text field, because that's
+// the only way to get a mobile keyboard, which shows while kbdEl has the
+// focus, and because mobile keyboards and IMEs deliver text as input
+// events, not key events (Android reports most keys as "Unidentified").
+// Key events still handle special keys and modifier combinations.
+//
+// Typing goes to the session wherever the page's focus is, except in other
+// text fields (such as for renaming).
+const kbdEl = document.getElementById("kbd");
+const inTextField = (el) => el instanceof Element && el !== kbdEl && el.closest("input, textarea, select");
+
+// The field always holds one character, so that a mobile keyboard's
+// Backspace has something to delete, and so produces an input event.
+const kbdFill = " ";
+function resetField() {
+  kbdEl.value = kbdFill;
+  kbdEl.setSelectionRange(kbdFill.length, kbdFill.length);
+}
+resetField();
+
+// Sticky modifiers, from the extra-keys bar, apply to the next key.
+let stickyCtrl = false, stickyAlt = false;
+
+function clearSticky() {
+  stickyCtrl = stickyAlt = false;
+  for (const b of document.querySelectorAll("#extrakeys .sticky")) b.classList.remove("on");
+}
+
+// typeText sends text typed into the field, applying sticky modifiers to
+// its first character.
+function typeText(text) {
+  if (!text) return;
+  if (stickyCtrl || stickyAlt) {
+    const [first, ...rest] = Array.from(text);
+    const b = keyBytes({key: first, ctrlKey: stickyCtrl, altKey: stickyAlt}) ?? first;
+    clearSticky();
+    text = b + rest.join("");
+  }
+  send({input: text});
+}
 
 document.addEventListener("keydown", (ev) => {
   if (!writable || inTextField(ev.target)) return;
-  const b = keyBytes(ev);
+  // Mobile keyboards and IMEs: their text comes as input events.
+  if (ev.isComposing || ev.key === "Unidentified" || ev.keyCode === 229) return;
+  const plain = [...ev.key].length === 1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey;
+  if (plain && !stickyCtrl && !stickyAlt && document.activeElement === kbdEl) {
+    return; // the field's input event will deliver it
+  }
+  const b = keyBytes(stickyCtrl || stickyAlt
+    ? {key: ev.key, shiftKey: ev.shiftKey, ctrlKey: ev.ctrlKey || stickyCtrl, altKey: ev.altKey || stickyAlt}
+    : ev);
   if (b == null) return;
   ev.preventDefault();
+  clearSticky();
   send({input: b});
+});
+
+// Composition (IMEs, and mobile keyboards' autocorrect) edits text in
+// place before committing it. Send it as it changes, as the difference from
+// what was sent so far: Backspaces for what changed, then the new text.
+let composed = [];
+function sendComposition(text) {
+  const next = Array.from(text || "");
+  let common = 0;
+  while (common < composed.length && common < next.length && composed[common] === next[common]) common++;
+  const out = "\x7f".repeat(composed.length - common) + next.slice(common).join("");
+  composed = next;
+  if (out) send({input: out});
+}
+kbdEl.addEventListener("compositionstart", () => { composed = []; });
+kbdEl.addEventListener("compositionend", (ev) => {
+  if (writable) sendComposition(ev.data);
+  composed = [];
+  resetField();
+});
+
+kbdEl.addEventListener("input", (ev) => {
+  if (!writable) {
+    resetField();
+    return;
+  }
+  if (ev.isComposing || ev.inputType === "insertCompositionText") {
+    sendComposition(ev.data);
+    return;
+  }
+  switch (ev.inputType) {
+    case "insertText":
+    case "insertReplacementText":
+      typeText(ev.data);
+      break;
+    case "insertLineBreak":
+    case "insertParagraph":
+      send({input: "\r"});
+      break;
+    case "deleteContentBackward":
+      send({input: "\x7f"});
+      break;
+    case "deleteWordBackward":
+      send({input: "\x17"}); // Ctrl-W
+      break;
+  }
+  resetField();
+});
+
+// focusKeyboard focuses the field, which on mobile shows the keyboard.
+function focusKeyboard() {
+  kbdEl.focus({preventScroll: true});
+}
+const touch = matchMedia("(pointer: coarse)").matches;
+// On a desktop, the field takes the focus right away, and back from clicks.
+// On mobile, focusing it pops up the keyboard, so that's left to the user.
+if (writable && !touch) focusKeyboard();
+screenEl.addEventListener("click", () => {
+  if (writable && !(modes.m && !touch)) focusKeyboard();
 });
 
 document.addEventListener("paste", (ev) => {
@@ -479,7 +589,58 @@ modeEl.addEventListener("click", () => {
   if (!writable && sizeOwner) setSizeOwner(false);
   showMode();
   reconnect();
+  if (writable && !touch) focusKeyboard();
 });
+
+// The extra-keys bar, for mobile keyboards' missing keys, and the button
+// that shows and hides the keyboard.
+function showKeyboardButtons() {
+  const up = document.activeElement === kbdEl;
+  for (const b of document.querySelectorAll(".kbdtoggle")) {
+    b.classList.toggle("on", up);
+    b.title = up ? "Hide the keyboard" : "Show the keyboard";
+  }
+}
+kbdEl.addEventListener("focus", showKeyboardButtons);
+kbdEl.addEventListener("blur", showKeyboardButtons);
+for (const b of document.querySelectorAll(".kbdtoggle")) {
+  b.addEventListener("click", () => {
+    if (document.activeElement === kbdEl) kbdEl.blur();
+    else focusKeyboard();
+  });
+}
+const extraKeys = {
+  esc: {key: "Escape"}, tab: {key: "Tab"},
+  up: {key: "ArrowUp"}, down: {key: "ArrowDown"}, left: {key: "ArrowLeft"}, right: {key: "ArrowRight"},
+  pipe: {key: "|"}, tilde: {key: "~"}, slash: {key: "/"}, dash: {key: "-"},
+};
+for (const b of document.querySelectorAll("#extrakeys button")) {
+  // Keep the focus, and so the keyboard, where it is.
+  b.addEventListener("pointerdown", (ev) => ev.preventDefault());
+  b.addEventListener("click", () => {
+    const k = b.dataset.key;
+    if (k === "ctrl") { stickyCtrl = !stickyCtrl; b.classList.toggle("on", stickyCtrl); return; }
+    if (k === "alt") { stickyAlt = !stickyAlt; b.classList.toggle("on", stickyAlt); return; }
+    const spec = extraKeys[k];
+    if (!spec) return;
+    const bytes = keyBytes({...spec, ctrlKey: stickyCtrl, altKey: stickyAlt});
+    clearSticky();
+    if (bytes != null) send({input: bytes});
+  });
+}
+
+// On mobile, the keyboard covers part of the window without resizing it;
+// the visual viewport is what's left. Fit the page to it, so the extra keys
+// stay above the keyboard and size-owning mode fits the space left.
+if (window.visualViewport) {
+  const fitViewport = () => {
+    document.body.style.height = `${visualViewport.height}px`;
+    cachedCellSize = null;
+    if (sizeOwner) fit();
+  };
+  visualViewport.addEventListener("resize", fitViewport);
+  fitViewport();
+}
 showMode();
 
 // The bell: a short beep and a flash of the screen. Browsers let a page

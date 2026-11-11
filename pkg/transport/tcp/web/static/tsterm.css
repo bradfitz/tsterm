@@ -83,3 +83,45 @@ main.oob {
 .screen .strike { text-decoration: line-through; }
 .screen .underline.strike { text-decoration: underline line-through; }
 .screen .conceal { visibility: hidden; }
+
+/* The hidden text field that receives typing (see viewer.js). It must be
+   focusable, so it can't be display: none, and its font must be at least
+   16px, or iOS zooms the page when it takes the focus. */
+#kbd {
+  position: fixed; left: 0; bottom: 0; width: 1px; height: 1px;
+  opacity: 0; border: 0; padding: 0; resize: none; overflow: hidden;
+  font-size: 16px; caret-color: transparent; color: transparent; background: transparent;
+}
+
+/* Touch devices: the keyboard button and the extra-keys bar. */
+.mobile { display: none; }
+@media (pointer: coarse) {
+  .mobile { display: revert; }
+  nav#extrakeys.mobile { display: flex; }
+}
+nav#extrakeys {
+  gap: .3rem; padding: .3rem; background: #222; overflow-x: auto; flex-shrink: 0;
+  -webkit-user-select: none; user-select: none; touch-action: manipulation;
+}
+nav#extrakeys button, header .kbdtoggle {
+  font: .95rem ui-monospace, Menlo, monospace; min-width: 2.6rem; padding: .45rem .5rem;
+  color: #ddd; background: #3a3a3a; border: 0; border-radius: .35rem; flex-shrink: 0;
+}
+nav#extrakeys button.on, .kbdtoggle.on { color: #000; background: #8c8; }
+
+/* Narrow screens. */
+nav#tabs { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; flex-shrink: 0; }
+body.viewer header { flex-shrink: 0; }
+@media (max-width: 640px) {
+  body.viewer header { gap: .5rem; padding: .35rem .5rem; flex-wrap: wrap; }
+  body.viewer header #ident code { display: none; }
+  body.viewer header .home { font-size: 0; }
+  body.viewer header .home::before { content: "←"; font-size: .85rem; }
+  body.viewer header #status { margin-left: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #toasts { top: auto; bottom: 4rem; right: .5rem; left: .5rem; }
+  body:not(.viewer) { margin: 1rem; }
+  table th:nth-child(5), table td:nth-child(5),
+  table th:nth-child(6), table td:nth-child(6),
+  table th:nth-child(7), table td:nth-child(7) { display: none; }
+  table td code { font-size: .8em; }
+}

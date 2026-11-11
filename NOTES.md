@@ -39,7 +39,12 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
 - **Web UI** (`http://HOST:2200/`, owner only): session list with renaming
   and creation; per-session viewer with typing (on by default), view-only
   mode, size-owning mode, snap-to-fit, mouse input, and tabs of recently
-  active sessions.
+  active sessions. Mobile friendly: typing goes through a hidden text
+  field, which is how the mobile keyboard appears (a ⌨ button shows and
+  hides it) and how IME and autocorrect composition arrive (sent live, as
+  diffs); touch devices get an extra-keys bar (Esc, Tab, sticky Ctrl and
+  Alt, arrows, | ~ / -); the page fits the visual viewport, so size-owning
+  mode fits the space above the keyboard.
 - **HTTPS** on the same port as HTTP (connections are sniffed: TLS starts
   with 0x16), with the node's certificate from tailscaled, when the tailnet
   has HTTPS certificates enabled (the node's MagicDNS name is in the
@@ -133,8 +138,8 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   already view-only; needs a way to grant non-owners view access.
 - **Protocol gaps** for GUI clients: scrollback; client theme colors (the
   emulator answers color queries with its own defaults).
-- **Web UI**: IME; keys browsers keep (Ctrl-W, Ctrl-T). (Mouse input is
-  done: reports in SGR or X10 encoding; shift bypasses them to select.)
+- **Web UI**: keys browsers keep (Ctrl-W, Ctrl-T); a font-size control, for
+  phones; trying it on real iOS and Android keyboards (only emulated so far).
 - **Model gaps**: underline color (SGR 58) and overline aren't in
   `vt.Style`, so clients don't draw them; blink isn't animated.
 - **Naming**: user aliases exist (rename); optional window-title prefixing
