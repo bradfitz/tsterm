@@ -234,3 +234,28 @@ func BenchmarkNew(b *testing.B) {
 		t.Close()
 	}
 }
+
+// TestEraseKeepsBackground checks that cells erased while a background
+// color is set have that color ("background color erase"), as when a
+// program paints a colored bar with EL.
+func TestEraseKeepsBackground(t *testing.T) {
+	g := newTerm(t, 3, 10)
+	g.Write([]byte("\x1b[44mbar\x1b[K\x1b[0m\r\n\x1b[48;2;1;2;3m\x1b[K\x1b[0m"))
+	s := g.Snapshot()
+	for _, x := range []int{0, 5, 9} {
+		if bg := s.Cells[0][x].Style.Bg; bg != (Color{Kind: ColorIndexed, Index: 4}) {
+			t.Errorf("row 0 col %d bg = %+v, want palette 4", x, bg)
+		}
+	}
+	if bg := s.Cells[1][7].Style.Bg; bg != (Color{Kind: ColorRGB, R: 1, G: 2, B: 3}) {
+		t.Errorf("row 1 bg = %+v, want rgb 1,2,3", bg)
+	}
+	if bg := s.Cells[2][0].Style.Bg; bg != (Color{}) {
+		t.Errorf("untouched row bg = %+v, want default", bg)
+	}
+	// And they survive a checkpoint.
+	r := restore(t, checkpoint(t, g), 3, 10)
+	if bg := r.Snapshot().Cells[0][9].Style.Bg; bg != (Color{Kind: ColorIndexed, Index: 4}) {
+		t.Errorf("after restore, bg = %+v", bg)
+	}
+}

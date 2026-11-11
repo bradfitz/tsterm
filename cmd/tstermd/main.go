@@ -33,7 +33,9 @@ import (
 	"tailscale.com/client/local"
 	"tailscale.com/tsnet"
 
+	"github.com/bradfitz/tsterm/internal/demoapp"
 	"github.com/bradfitz/tsterm/pkg/auth"
+	"github.com/bradfitz/tsterm/pkg/pty"
 	"github.com/bradfitz/tsterm/pkg/session"
 	"github.com/bradfitz/tsterm/pkg/shim"
 	"github.com/bradfitz/tsterm/pkg/transport/tcp"
@@ -42,6 +44,10 @@ import (
 )
 
 func main() {
+	// tstermd also serves as the demo program, which sessions named
+	// session.DemoName run.
+	demoapp.MainIfRequested()
+
 	useTSNet := flag.Bool("tsnet", false, "embed a tsnet.Server instead of using the host tailscaled")
 	stateDir := flag.String("state-dir", defaultStateDir(), "tsnet state directory (only used with -tsnet)")
 	hostname := flag.String("hostname", "", "tsnet hostname (only used with -tsnet; defaults to os.Hostname)")
@@ -81,6 +87,10 @@ func main() {
 
 	mgr := session.NewManager(*runDir, launcher)
 	mgr.SetLogf(log.Printf)
+	mgr.SetDemo(func() pty.Config {
+		cmd, env := demoapp.Command()
+		return pty.Config{Command: cmd, Env: env}
+	})
 	// On shutdown, leave the sessions running for the next tstermd.
 	defer mgr.Detach()
 	// Restore before serving, so that reattaching clients find their

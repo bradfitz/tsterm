@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/bradfitz/tsterm/pkg/pty"
 	"github.com/bradfitz/tsterm/pkg/shim"
 	"github.com/bradfitz/tsterm/pkg/shimproto"
 )
@@ -25,14 +27,27 @@ var ErrNotFound = errors.New("session: not found")
 var ErrNameTaken = errors.New("session: name already in use")
 
 // ErrBadName is returned for a session name that ValidName rejects.
-var ErrBadName = errors.New(`session: names are up to 64 letters, digits, '-', '_', and '.', not starting with "pty-"`)
+var ErrBadName = errors.New(`session: names are up to 64 letters, digits, '-', '_', and '.', not starting with "pty-" or "_tsterm"`)
+
+// ErrNoDemo is returned by Create for DemoName when the Manager has no demo
+// program (see SetDemo).
+var ErrNoDemo = errors.New("session: no demo available")
+
+// ReservedPrefix starts the session names that tsterm reserves for itself,
+// such as DemoName. ValidName rejects them.
+const ReservedPrefix = "_tsterm"
+
+// DemoName is the name that, given to Create, starts the demo program (see
+// SetDemo) instead of a shell. Each demo session gets the first free name
+// of DemoName, DemoName+"2", DemoName+"3", and so on.
+const DemoName = ReservedPrefix + "_demo"
 
 // ValidName reports whether name may name a session. Names are typed on
 // command lines and in URLs, so they are restricted to a safe alphabet,
 // and they may not start with "pty-", so that no name is mistaken for an
-// ID.
+// ID, or with ReservedPrefix.
 func ValidName(name string) bool {
-	if name == "" || len(name) > 64 || strings.HasPrefix(name, "pty-") {
+	if name == "" || len(name) > 64 || strings.HasPrefix(name, "pty-") || strings.HasPrefix(name, ReservedPrefix) {
 		return false
 	}
 	for _, r := range name {
@@ -58,6 +73,7 @@ type Manager struct {
 	dir      string
 	launcher shim.Launcher
 	logf     func(format string, args ...any)
+	demo     func() pty.Config
 
 	mu     sync.Mutex
 	byID   map[ID]*Session
@@ -76,6 +92,22 @@ func NewManager(dir string, launcher shim.Launcher) *Manager {
 	}
 }
 
+// SetDemo sets the program that sessions created with DemoName run.
+func (m *Manager) SetDemo(demo func() pty.Config) { m.demo = demo }
+
+// freeDemoName returns the first free name for a demo session.
+func (m *Manager) freeDemoName() string {
+	for i := 1; ; i++ {
+		name := DemoName
+		if i > 1 {
+			name += strconv.Itoa(i)
+		}
+		if m.ByName(name) == nil {
+			return name
+		}
+	}
+}
+
 // SetLogf sets where the Manager logs. The default is to discard logs.
 func (m *Manager) SetLogf(logf func(format string, args ...any)) { m.logf = logf }
 
@@ -89,7 +121,13 @@ func (m *Manager) socketPath(id ID) string {
 // Create starts a session per cfg and registers it. If cfg.Name is set and
 // already in use, ErrNameTaken is returned.
 func (m *Manager) Create(cfg Config) (*Session, error) {
-	if cfg.Name != "" && !ValidName(cfg.Name) {
+	if cfg.Name == DemoName {
+		if m.demo == nil {
+			return nil, ErrNoDemo
+		}
+		cfg.PTY = m.demo()
+		cfg.Name = m.freeDemoName()
+	} else if cfg.Name != "" && !ValidName(cfg.Name) {
 		return nil, ErrBadName
 	}
 	if cfg.Name != "" && m.ByName(cfg.Name) != nil {

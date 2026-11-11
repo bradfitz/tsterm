@@ -287,6 +287,80 @@ document.addEventListener("paste", (ev) => {
   send({input: text});
 });
 
+// Mouse reports, for programs that asked for them (modes.m is a
+// vt.MouseMode: 1 X10, 2 normal, 3 button-event, 4 any-event tracking;
+// modes.ms is SGR encoding). Shift bypasses reporting, so the user can still
+// select text, as in most terminals.
+let mouseButton = -1; // the button held down, if any
+
+function mouseCell(ev) {
+  const [cw, ch] = cellSize();
+  const r = screenEl.getBoundingClientRect();
+  const x = Math.floor((ev.clientX - r.left) / cw);
+  const y = Math.floor((ev.clientY - r.top) / ch);
+  if (x < 0 || y < 0 || x >= numCols || y >= numRows) return null;
+  return [x, y];
+}
+
+// mouseReport encodes a mouse event for the program: button is 0-2 for
+// left, middle, and right, or 64/65 for the wheel; flags adds 32 for
+// motion; release is a button release.
+function mouseReport(button, x, y, release, ev) {
+  let b = button;
+  if (ev.shiftKey) b |= 4;
+  if (ev.altKey) b |= 8;
+  if (ev.ctrlKey) b |= 16;
+  if (modes.ms) return `\x1b[<${b};${x + 1};${y + 1}${release ? "m" : "M"}`;
+  // The X10 encoding can't say which button was released, and can't
+  // address past column or row 223.
+  if (release) b = 3 | (b & ~3);
+  return "\x1b[M" + String.fromCharCode(32 + b, 32 + Math.min(x + 1, 223), 32 + Math.min(y + 1, 223));
+}
+
+function mouseWanted(ev) {
+  return writable && modes.m && !ev.shiftKey;
+}
+
+screenEl.addEventListener("mousedown", (ev) => {
+  if (!mouseWanted(ev)) return;
+  const cell = mouseCell(ev);
+  if (!cell || ev.button > 2) return;
+  ev.preventDefault();
+  mouseButton = ev.button;
+  send({input: mouseReport(ev.button, cell[0], cell[1], false, ev)});
+});
+window.addEventListener("mouseup", (ev) => {
+  if (mouseButton < 0) return;
+  const button = mouseButton;
+  mouseButton = -1;
+  if (!mouseWanted(ev) || modes.m < 2) return; // X10 mode reports presses only
+  const cell = mouseCell(ev) || [0, 0];
+  send({input: mouseReport(button, cell[0], cell[1], true, ev)});
+});
+let lastMotion = "";
+screenEl.addEventListener("mousemove", (ev) => {
+  if (!mouseWanted(ev)) return;
+  // Button-event tracking reports drags; any-event tracking, all motion.
+  if (!(modes.m === 4 || (modes.m === 3 && mouseButton >= 0))) return;
+  const cell = mouseCell(ev);
+  if (!cell) return;
+  const key = cell.join(",");
+  if (key === lastMotion) return; // only when entering a new cell
+  lastMotion = key;
+  const button = mouseButton >= 0 ? mouseButton : 3;
+  send({input: mouseReport(32 + button, cell[0], cell[1], false, ev)});
+});
+screenEl.addEventListener("wheel", (ev) => {
+  if (!mouseWanted(ev) || ev.deltaY === 0) return;
+  const cell = mouseCell(ev);
+  if (!cell) return;
+  ev.preventDefault();
+  send({input: mouseReport(ev.deltaY < 0 ? 64 : 65, cell[0], cell[1], false, ev)});
+}, {passive: false});
+screenEl.addEventListener("contextmenu", (ev) => {
+  if (mouseWanted(ev)) ev.preventDefault(); // right clicks go to the program
+});
+
 // Focus reports, for programs that asked for them.
 window.addEventListener("focus", () => { if (modes.f) send({input: "\x1b[I"}); });
 window.addEventListener("blur", () => { if (modes.f) send({input: "\x1b[O"}); });
@@ -302,8 +376,16 @@ for (const b of document.querySelectorAll("header button, #sizehandle, #snap")) 
 // turns it on and off.
 const handleEl = document.getElementById("sizehandle");
 
-// cellSize measures a character cell of the terminal's font.
+// cellSize measures a character cell of the terminal's font. The result is
+// cached until the window resizes, since mouse events need it constantly.
+let cachedCellSize = null;
+window.addEventListener("resize", () => { cachedCellSize = null; });
 function cellSize() {
+  if (!cachedCellSize) cachedCellSize = measureCell();
+  return cachedCellSize;
+}
+
+function measureCell() {
   const probe = document.createElement("span");
   probe.textContent = "M".repeat(100);
   probe.style.visibility = "hidden";
@@ -445,8 +527,8 @@ async function refreshTabs() {
   });
   const add = document.createElement("button");
   add.textContent = "+";
-  add.title = "New session";
-  add.addEventListener("click", () => newSession(""));
+  add.title = "New session (shift-click for the demo)";
+  add.addEventListener("click", (ev) => newSession(ev.shiftKey ? demoName : ""));
   tabsEl.replaceChildren(...tabs, add);
 }
 refreshTabs();

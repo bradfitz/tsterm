@@ -74,9 +74,16 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   scrollback) plus our ANSI repaint as a fallback, because libghostty
   versions its snapshot format separately from its ABI. Checkpoints from
   before the switch (bare repaints) still restore.
-- **Tests** use `internal/fakeapp`, a stand-in full-screen program (alt
-  screen, scroll region, modes, terminal queries, notifications) that test
-  binaries run as themselves in a PTY; see `pkg/session/fakeapp_test.go`.
+- **Demo and tests.** `internal/demoapp` is a full-screen program showing
+  off what a terminal can do: colors, styles, Unicode, a hyperlink, title
+  animation, cursor styles, bell, notifications, mouse clicks, paste, focus,
+  resizing, and replies to queries. Sessions named `_tsterm_demo` run it
+  (tstermd re-executes itself as the demo); start one with
+  `tsterm -new HOST _tsterm_demo`, the index page's "Try the demo", or
+  shift-click on "+" in the viewer's tabs. Names starting with `_tsterm`
+  are reserved. Tests run it too, as a stand-in for programs such as
+  editors (test binaries run themselves in a PTY); see
+  `pkg/session/demoapp_test.go`.
 - **Desktop notifications** (OSC 9 and 777) travel in the screen state, like
   the bell. The CLI passes them to the local terminal (control characters
   stripped); the web viewer shows them with the browser's Notification API
@@ -94,7 +101,7 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   the shim protocol sends them as base64 JSON, so a binary frame for the
   blob may be worth it.
 
-**To do:** push tsterm-prebuilt's ABI-2 commit (80d5178), then run
+**To do:** push tsterm-prebuilt's commits (through 0b42044), then run
 `go get github.com/bradfitz/tsterm-prebuilt/ghosttyvt@main` and remove the
 `replace` directive from go.mod.
 
@@ -114,7 +121,10 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   already view-only; needs a way to grant non-owners view access.
 - **Protocol gaps** for GUI clients: scrollback; client theme colors (the
   emulator answers color queries with its own defaults).
-- **Web UI**: mouse input; IME; keys browsers keep (Ctrl-W, Ctrl-T).
+- **Web UI**: IME; keys browsers keep (Ctrl-W, Ctrl-T). (Mouse input is
+  done: reports in SGR or X10 encoding; shift bypasses them to select.)
+- **Model gaps**: underline color (SGR 58) and overline aren't in
+  `vt.Style`, so clients don't draw them; blink isn't animated.
 - **Naming**: user aliases exist (rename); optional window-title prefixing
   with the alias is still to do.
 

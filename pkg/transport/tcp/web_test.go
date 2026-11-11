@@ -6,14 +6,17 @@ import (
 	"encoding/json/v2"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/bradfitz/tsterm/internal/demoapp"
 	"github.com/bradfitz/tsterm/pkg/proto"
 	"github.com/bradfitz/tsterm/pkg/pty"
 	"github.com/bradfitz/tsterm/pkg/session"
+	"github.com/bradfitz/tsterm/pkg/vt"
 )
 
 func get(t *testing.T, url, accept string) (int, string, string) {
@@ -189,4 +192,65 @@ func TestRename(t *testing.T) {
 	if !strings.Contains(body, `class="rename" data-id="`+string(a.ID())+`"`) {
 		t.Errorf("index has no rename cell: %s", body)
 	}
+}
+
+func TestMain(m *testing.M) {
+	// For the demo session, this binary is the demo program.
+	demoapp.MainIfRequested()
+	os.Exit(m.Run())
+}
+
+func TestCreateDemo(t *testing.T) {
+	srv, hts := newTestServer(t, &allowAllLC{user: 1})
+	post := func() (int, string) {
+		req, _ := http.NewRequest("POST", hts.URL+"/v1/sessions", strings.NewReader(`{"name":"_tsterm_demo","rows":10,"cols":40}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, body := post(); code != 404 || !strings.Contains(body, "no_demo") {
+		t.Errorf("demo without a demo program: %d %s", code, body)
+	}
+	srv.Manager.SetDemo(func() pty.Config {
+		cmd, env := demoapp.Command()
+		return pty.Config{Command: cmd, Env: env}
+	})
+	code, body := post()
+	if code != 201 || !strings.Contains(body, `"name":"_tsterm_demo"`) {
+		t.Fatalf("creating the demo: %d %s", code, body)
+	}
+	sess, err := srv.Manager.Resolve("_tsterm_demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(rowsText(sess.Snapshot().Cells), demoapp.ReadyText) {
+		if time.Now().After(deadline) {
+			t.Fatalf("demo never became ready:\n%s", rowsText(sess.Snapshot().Cells))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if code, body := post(); code != 201 || !strings.Contains(body, `"name":"_tsterm_demo2"`) {
+		t.Errorf("second demo: %d %s", code, body)
+	}
+	if code, _ := patchName(t, hts.URL+"/v1/sessions/"+string(sess.ID()), "_tsterm_mine"); code != 400 {
+		t.Errorf("renaming to a reserved name: %d, want 400", code)
+	}
+}
+
+func rowsText(cells [][]vt.Cell) string {
+	var sb strings.Builder
+	for _, row := range cells {
+		for _, c := range row {
+			sb.WriteString(c.Grapheme)
+		}
+		sb.WriteByte('\n')
+	}
+	return sb.String()
 }

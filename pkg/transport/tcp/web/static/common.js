@@ -46,6 +46,10 @@ function startRename(el, id, current, onDone) {
   input.addEventListener("blur", cancel);
 }
 
+// demoName is the session name that starts tsterm's demo program, which
+// shows off what a terminal can do.
+const demoName = "_tsterm_demo";
+
 // newSession starts a session, named name unless it is empty, and opens
 // it, sized to the browser window: nothing else owns its size yet.
 async function newSession(name) {

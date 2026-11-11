@@ -11,6 +11,7 @@
 <form id="new">
 <input name="name" placeholder="name (optional)" spellcheck="false">
 <button type="submit">New session</button>
+<button type="button" id="demo" title="Start tsterm's demo program, which shows off what a terminal can do">Try the demo</button>
 </form>
 {{if .}}
 <table>
@@ -37,6 +38,7 @@ document.getElementById("new").addEventListener("submit", (ev) => {
   ev.preventDefault();
   newSession(ev.target.name.value.trim());
 });
+document.getElementById("demo").addEventListener("click", () => newSession(demoName));
 
 // Click a name to rename its session.
 for (const cell of document.querySelectorAll("td.rename")) {

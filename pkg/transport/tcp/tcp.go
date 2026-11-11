@@ -139,6 +139,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusBadRequest, "bad_name", err.Error())
 			return
 		}
+		if errors.Is(err, session.ErrNoDemo) {
+			writeError(w, r, http.StatusNotFound, "no_demo", err.Error())
+			return
+		}
 		writeError(w, r, http.StatusInternalServerError, "create", err.Error())
 		return
 	}
