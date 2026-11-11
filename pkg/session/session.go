@@ -97,7 +97,6 @@ const (
 // vt.Terminal. Sessions are created and restored by a Manager.
 type Session struct {
 	id      ID
-	name    string
 	token   []byte
 	created time.Time
 	conn    *shim.Conn
@@ -155,7 +154,6 @@ func attach(conn *shim.Conn, id ID, m meta, restored bool) (*Session, error) {
 	term.Replies() // a checkpoint asks nothing, but be sure
 	s := &Session{
 		id:         id,
-		name:       m.Name,
 		token:      m.Token,
 		created:    m.Created,
 		conn:       conn,
@@ -209,7 +207,20 @@ func (s *Session) ID() ID { return s.id }
 
 // Name returns the session's human-readable name, or the empty string if it
 // has none.
-func (s *Session) Name() string { return s.name }
+func (s *Session) Name() string {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	return s.meta.Name
+}
+
+// setName sets the session's name, storing it in the shim. The Manager
+// keeps names unique.
+func (s *Session) setName(name string) error {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	s.meta.Name = name
+	return s.conn.SetMeta(encodeMeta(s.meta))
+}
 
 // Token returns the per-session opaque capability. Callers must treat it as
 // a secret; revealing it allows another caller on the same authorized node

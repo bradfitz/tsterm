@@ -43,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions", s.create)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.info)
 	mux.HandleFunc("DELETE /v1/sessions/{id}", s.kill)
+	mux.HandleFunc("PATCH /v1/sessions/{id}", s.update)
 	if s.WSHandler != nil {
 		mux.Handle("GET /v1/sessions/{id}/ws", s.WSHandler)
 	}
@@ -134,6 +135,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusConflict, "name_taken", err.Error())
 			return
 		}
+		if errors.Is(err, session.ErrBadName) {
+			writeError(w, r, http.StatusBadRequest, "bad_name", err.Error())
+			return
+		}
 		writeError(w, r, http.StatusInternalServerError, "create", err.Error())
 		return
 	}
@@ -144,6 +149,37 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.resolveOr404(w, r)
 	if !ok {
 		return
+	}
+	writeResponse(w, r, http.StatusOK, s.infoFor(sess))
+}
+
+func (s *Server) update(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64*1024))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "body", err.Error())
+		return
+	}
+	var req proto.UpdateSessionReq
+	if err := decodeRequest(r, body, &req); err != nil {
+		writeError(w, r, http.StatusBadRequest, "decode", err.Error())
+		return
+	}
+	sess, ok := s.resolveOr404(w, r)
+	if !ok {
+		return
+	}
+	if req.Name != nil {
+		switch err := s.Manager.Rename(string(sess.ID()), *req.Name); {
+		case errors.Is(err, session.ErrNameTaken):
+			writeError(w, r, http.StatusConflict, "name_taken", err.Error())
+			return
+		case errors.Is(err, session.ErrBadName):
+			writeError(w, r, http.StatusBadRequest, "bad_name", err.Error())
+			return
+		case err != nil:
+			writeError(w, r, http.StatusInternalServerError, "rename", err.Error())
+			return
+		}
 	}
 	writeResponse(w, r, http.StatusOK, s.infoFor(sess))
 }

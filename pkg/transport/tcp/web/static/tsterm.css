@@ -10,11 +10,28 @@ a { color: inherit; }
 body.viewer { margin: 0; background: #000; color: #ddd; }
 body.viewer header { font-size: .85rem; padding: .4rem .8rem; background: #222; display: flex; gap: 1rem; align-items: baseline; }
 body.viewer header #status { margin-left: auto; }
-.screen {
-  margin: 0; padding: .5rem .8rem;
+body.viewer #ident { cursor: text; }
+body.viewer #ident input { font: inherit; }
+nav#tabs { font-size: .8rem; padding: .25rem .8rem; background: #181818; display: flex; gap: .3rem; flex-wrap: wrap; }
+nav#tabs a, nav#tabs span { padding: .1rem .5rem; border-radius: .3rem; text-decoration: none; color: #aaa; }
+nav#tabs a:hover { background: #333; color: #fff; }
+nav#tabs .current { background: #444; color: #fff; }
+
+/* The area outside the terminal: a checkerboard whose squares are half a
+   cell wide. The tile is 1ch of the terminal's font, holding two squares
+   on a side. */
+main.oob {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 14px; line-height: 1.2;
-  white-space: pre; overflow: auto;
+  min-height: 100vh;
+  background: repeating-conic-gradient(#262626 0 25%, #1a1a1a 0 50%) 0 0 / 1ch 1ch;
+}
+.screen {
+  margin: 0; padding: 0;
+  font: inherit;
+  white-space: pre; overflow: hidden;
+  background: #000;
+  display: inline-block; vertical-align: top;
 }
 .screen .cursor { outline: 1px solid #ddd; }
 .screen .bold { font-weight: bold; }

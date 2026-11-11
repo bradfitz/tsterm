@@ -73,8 +73,16 @@ const screenEl = document.getElementById("screen");
 const statusEl = document.getElementById("status");
 const sessionID = screenEl.dataset.id;
 
-// The screen being displayed: rows of cells, plus the cursor.
-let rows = [], cursor = null;
+// The screen being displayed: its size, rows of cells, and the cursor.
+let numRows = 0, numCols = 0, rows = [], cursor = null;
+
+// setSize sizes the screen element to exactly the terminal, so that the
+// out-of-bounds pattern shows around it.
+function setSize(r, c) {
+  numRows = r; numCols = c;
+  screenEl.style.width = `${c}ch`;
+  screenEl.style.height = `${r * 1.2}em`; // the CSS line-height
+}
 
 function renderRow(cells, y) {
   const line = document.createElement("div");
@@ -119,6 +127,7 @@ function rerenderRow(y) {
 }
 
 function applySnapshot(s) {
+  setSize(s.r || 0, s.c || 0);
   rows = s.x || [];
   cursor = s.cur || null;
   if (s.t) document.title = s.t;
@@ -128,6 +137,7 @@ function applySnapshot(s) {
 function applyDelta(d) {
   if (d.rz) {
     // Resized: the delta carries every row.
+    setSize(d.r, d.c);
     rows = Array.from({length: d.r}, (_, y) => rows[y] || []);
   }
   const touched = new Set();
@@ -161,3 +171,48 @@ function connect() {
   };
 }
 connect();
+
+// The tab bar: the most recently active sessions, refreshed periodically.
+const tabsEl = document.getElementById("tabs");
+const maxTabs = 12;
+
+// tabLabel names a session for its tab: its name, or the start of its ID.
+function tabLabel(s) {
+  return s.name || s.id.slice(0, "pty-".length + 4);
+}
+
+async function refreshTabs() {
+  let list;
+  try {
+    const resp = await fetch("/v1/sessions?sort=activity", {headers: {"Accept": "application/json"}});
+    if (!resp.ok) return;
+    list = await resp.json();
+  } catch {
+    return;
+  }
+  const tabs = list.filter(s => s.active).slice(0, maxTabs).map(s => {
+    const el = document.createElement(s.id === sessionID ? "span" : "a");
+    el.textContent = tabLabel(s);
+    el.title = s.id + (s.name ? ` (${s.name})` : "");
+    if (s.id === sessionID) el.className = "current";
+    else el.href = `/s/${encodeURIComponent(s.id)}`;
+    return el;
+  });
+  tabsEl.replaceChildren(...tabs);
+}
+refreshTabs();
+setInterval(refreshTabs, 5000);
+
+// Double-click the session's name or ID to rename it.
+const identEl = document.getElementById("ident");
+const nameEl = document.getElementById("name");
+identEl.addEventListener("dblclick", () => {
+  if (identEl.querySelector("input")) return;
+  const saved = Array.from(identEl.childNodes);
+  startRename(identEl, sessionID, nameEl.textContent, (name) => {
+    nameEl.textContent = name;
+    identEl.replaceChildren(...saved);
+    document.title = `${name || sessionID} · tsterm`;
+    refreshTabs();
+  });
+});

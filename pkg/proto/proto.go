@@ -180,6 +180,14 @@ type CreateSessionReq struct {
 	Cols int      `cbor:"c,omitempty" json:"cols,omitzero"`
 }
 
+// UpdateSessionReq is the body of PATCH /v1/sessions/{id}. Fields left
+// nil are unchanged.
+type UpdateSessionReq struct {
+	// Name, if non-nil, renames the session; the empty string removes
+	// its name.
+	Name *string `cbor:"name,omitempty" json:"name,omitzero"`
+}
+
 // SessionInfo is returned by POST /v1/sessions and by GET /v1/sessions/{id}.
 // Token is the per-session capability that UDP clients must echo back in
 // every Hello.

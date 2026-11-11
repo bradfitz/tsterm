@@ -39,7 +39,7 @@ func TestWebIndexAndViewer(t *testing.T) {
 	}
 
 	sess, err := srv.Manager.Create(session.Config{
-		Name: "build<b>",
+		Name: "build.v2_x-y",
 		PTY:  pty.Config{Command: "/bin/sh", Args: []string{"-c", "sleep 5"}},
 	})
 	if err != nil {
@@ -52,8 +52,8 @@ func TestWebIndexAndViewer(t *testing.T) {
 	if !strings.Contains(body, `href="/s/`+string(sess.ID())+`"`) {
 		t.Errorf("index lacks a link to the session viewer: %s", body)
 	}
-	if strings.Contains(body, "build<b>") || !strings.Contains(body, "build&lt;b&gt;") {
-		t.Errorf("session name not HTML-escaped: %s", body)
+	if !strings.Contains(body, ">build.v2_x-y<") {
+		t.Errorf("index lacks the session's name: %s", body)
 	}
 
 	code, _, body = get(t, hts.URL+"/s/"+string(sess.ID()), "text/html")
@@ -123,5 +123,70 @@ func TestListJSONSortedByActivity(t *testing.T) {
 	}
 	if code, _, _ := get(t, hts.URL+"/v1/sessions?sort=bogus", "application/json"); code != 400 {
 		t.Errorf("bad sort: %d, want 400", code)
+	}
+}
+
+func patchName(t *testing.T, url, name string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest("PATCH", url, strings.NewReader(`{"name":"`+name+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+func TestRename(t *testing.T) {
+	srv, hts := newTestServer(t, &allowAllLC{user: 1})
+	a, err := srv.Manager.Create(session.Config{PTY: pty.Config{Command: "/bin/cat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := srv.Manager.Create(session.Config{Name: "taken", PTY: pty.Config{Command: "/bin/cat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := hts.URL + "/v1/sessions/" + string(a.ID())
+	if code, body := patchName(t, url, "build"); code != 200 || !strings.Contains(body, `"name":"build"`) {
+		t.Fatalf("rename: %d %s", code, body)
+	}
+	if got, err := srv.Manager.Resolve("build"); err != nil || got != a {
+		t.Errorf("new name does not resolve: %v %v", got, err)
+	}
+	// Renaming again frees the old name.
+	if code, _ := patchName(t, url, "build2"); code != 200 {
+		t.Fatalf("second rename: %d", code)
+	}
+	if _, err := srv.Manager.Resolve("build"); err == nil {
+		t.Error("old name still resolves")
+	}
+	for _, tt := range []struct {
+		name string
+		code int
+	}{
+		{"taken", 409},
+		{"pty-sneaky", 400},
+		{"has space", 400},
+		{"build2", 200}, // its own name
+		{"", 200},       // removes the name
+	} {
+		if code, body := patchName(t, url, tt.name); code != tt.code {
+			t.Errorf("rename to %q: %d %s, want %d", tt.name, code, body, tt.code)
+		}
+	}
+	if a.Name() != "" || b.Name() != "taken" {
+		t.Errorf("names now %q and %q", a.Name(), b.Name())
+	}
+	if code, _ := patchName(t, hts.URL+"/v1/sessions/pty-NOPE", "x"); code != 404 {
+		t.Errorf("rename of unknown session: %d, want 404", code)
+	}
+	// The pages offer renaming.
+	_, _, body := get(t, hts.URL+"/", "text/html")
+	if !strings.Contains(body, `class="rename" data-id="`+string(a.ID())+`"`) {
+		t.Errorf("index has no rename cell: %s", body)
 	}
 }

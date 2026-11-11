@@ -24,6 +24,27 @@ var ErrNotFound = errors.New("session: not found")
 // use by an active session.
 var ErrNameTaken = errors.New("session: name already in use")
 
+// ErrBadName is returned for a session name that ValidName rejects.
+var ErrBadName = errors.New(`session: names are up to 64 letters, digits, '-', '_', and '.', not starting with "pty-"`)
+
+// ValidName reports whether name may name a session. Names are typed on
+// command lines and in URLs, so they are restricted to a safe alphabet,
+// and they may not start with "pty-", so that no name is mistaken for an
+// ID.
+func ValidName(name string) bool {
+	if name == "" || len(name) > 64 || strings.HasPrefix(name, "pty-") {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Manager owns the daemon's set of live Sessions, indexed by both ID and
 // Name. It garbage-collects sessions whose Done channel has closed: those
 // stay in the map only until the next mutating call (Create, Kill, List).
@@ -68,6 +89,9 @@ func (m *Manager) socketPath(id ID) string {
 // Create starts a session per cfg and registers it. If cfg.Name is set and
 // already in use, ErrNameTaken is returned.
 func (m *Manager) Create(cfg Config) (*Session, error) {
+	if cfg.Name != "" && !ValidName(cfg.Name) {
+		return nil, ErrBadName
+	}
 	if cfg.Name != "" && m.ByName(cfg.Name) != nil {
 		return nil, ErrNameTaken
 	}
@@ -228,6 +252,34 @@ func (m *Manager) Resolve(idOrName string) (*Session, error) {
 		return s, nil
 	}
 	return nil, ErrNotFound
+}
+
+// Rename sets the name of the session with the given ID or Name. An empty
+// name removes the session's name.
+func (m *Manager) Rename(idOrName, name string) error {
+	if name != "" && !ValidName(name) {
+		return ErrBadName
+	}
+	s, err := m.Resolve(idOrName)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id, ok := m.byName[name]; ok && name != "" && id != s.ID() {
+		return ErrNameTaken
+	}
+	old := s.Name()
+	if err := s.setName(name); err != nil {
+		return err
+	}
+	if old != "" {
+		delete(m.byName, old)
+	}
+	if name != "" {
+		m.byName[name] = s.ID()
+	}
+	return nil
 }
 
 // Kill closes the session with the given ID or Name.

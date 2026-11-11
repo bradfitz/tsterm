@@ -274,3 +274,23 @@ func TestTermIsTheEmulators(t *testing.T) {
 		t.Errorf("client TERM leaked into the session:\n%s", screenText(s))
 	}
 }
+
+func TestRenameSurvivesRestore(t *testing.T) {
+	m, l := newTestManager(t)
+	s, err := m.Create(makeCfg("sleep 30"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Rename(string(s.ID()), "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	m.Detach()
+	m2 := NewManager(m.dir, l)
+	t.Cleanup(func() { m2.Close() })
+	if _, err := m2.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := m2.ByName("renamed"); got == nil || got.ID() != s.ID() {
+		t.Errorf("after restore, ByName(renamed) = %v", got)
+	}
+}
