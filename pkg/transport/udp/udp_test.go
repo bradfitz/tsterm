@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -21,8 +22,10 @@ import (
 	"github.com/bradfitz/tsterm/pkg/vt"
 
 	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
 )
 
 type allowAllLC struct{ user tailcfg.UserID }
@@ -584,4 +587,48 @@ func TestRestartResumesIdleClient(t *testing.T) {
 	c.send(proto.Envelope{Input: &proto.Input{Seq: 2, Keys: []byte("after"), Floor: 1}})
 	c.recvUntil(2*time.Second, func(e proto.Envelope) bool { return e.Ack != nil && e.Ack.Highest == 2 })
 	c.syncState(2*time.Second, func(d vt.ScreenDelta) bool { return strings.Contains(rowText(d), "beforeafter") })
+}
+
+func TestDetachForgetsClient(t *testing.T) {
+	srv, pc := startServer(t)
+	sess := newSession(t, srv, "/bin/cat")
+	c := dial(t, pc, sess)
+	c.hello(0)
+	c.syncState(time.Second, anyState)
+	if len(sess.Clients()) != 1 {
+		t.Fatalf("recorded clients = %v, want 1", sess.Clients())
+	}
+	c.send(proto.Envelope{Detach: &proto.Detach{}})
+	time.Sleep(100 * time.Millisecond)
+	if len(sess.Clients()) != 0 {
+		t.Errorf("client still recorded after Detach: %v", sess.Clients())
+	}
+	// The server no longer knows the client: input goes unanswered, and
+	// new output is not sent.
+	sess.WriteInput([]byte("x"))
+	c.send(proto.Envelope{Input: &proto.Input{Seq: 1, Keys: []byte("y")}})
+	c.expectSilence(500 * time.Millisecond)
+}
+
+func TestClientDroppedWhenAddressReassigned(t *testing.T) {
+	srv, pc := startServer(t)
+	sess := newSession(t, srv, "/bin/cat")
+	c := dial(t, pc, sess)
+	c.hello(0)
+	c.syncState(time.Second, anyState)
+
+	// The IPN bus reports that the client's address now belongs to a node
+	// owned by someone else.
+	srv.Auth.ApplyNotify(ipn.Notify{InitialStatus: &ipnstate.Status{
+		Self: &ipnstate.PeerStatus{NodeID: 1, UserID: 1},
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			key.NewNode().Public(): {NodeID: 2, UserID: 99, TailscaleIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}},
+		},
+	}})
+	time.Sleep(100 * time.Millisecond)
+	sess.WriteInput([]byte("after"))
+	c.expectSilence(500 * time.Millisecond)
+	if len(sess.Clients()) != 0 {
+		t.Errorf("deauthorized client still recorded: %v", sess.Clients())
+	}
 }

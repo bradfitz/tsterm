@@ -30,8 +30,10 @@ import (
 	"context"
 	"errors"
 	"log"
+	"maps"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -101,8 +103,11 @@ func init() {
 // the server up.
 const maxSentStates = 16
 
-// Serve reads packets from pc until ctx is canceled.
-func Serve(ctx context.Context, pc net.PacketConn, s *Server) error {
+// Serve reads packets from pc until ctx is canceled. Serve may be called
+// concurrently with the same Server for several sockets, such as one per
+// Tailscale address.
+func Serve(ctx context.Context, pc net.PacketConn, srv *Server) error {
+	s := *srv // apply defaults without modifying the shared Server
 	if s.Logf == nil {
 		s.Logf = func(string, ...any) {}
 	}
@@ -114,11 +119,12 @@ func Serve(ctx context.Context, pc net.PacketConn, s *Server) error {
 	}
 	mux := &mux{
 		pc:      pc,
-		srv:     s,
+		srv:     &s,
 		clients: map[netip.AddrPort]*client{},
 		ctx:     ctx,
 	}
 	go mux.reaper()
+	go mux.recheck()
 	mux.resume()
 	return mux.run()
 }
@@ -130,8 +136,6 @@ type mux struct {
 
 	mu      sync.Mutex
 	clients map[netip.AddrPort]*client
-
-	recordMu sync.Mutex // serializes updates to sessions' client records
 }
 
 func (m *mux) run() error {
@@ -207,7 +211,7 @@ func (m *mux) reaper() {
 }
 
 func (m *mux) attach(addr netip.AddrPort, h *proto.Hello) {
-	if _, err := m.srv.Auth.Allow(m.ctx, addr.String()); err != nil {
+	if err := m.srv.Auth.Allow(m.ctx, addr.String()); err != nil {
 		m.srv.Logf("udp: attach from %v: %v", addr, err)
 		return
 	}
@@ -275,36 +279,68 @@ const maxRemembered = 8
 // remember records the client at addr in sess, where it survives a tstermd
 // restart; see resume.
 func (m *mux) remember(sess *session.Session, addr netip.AddrPort, nonce []byte) {
-	m.recordMu.Lock()
-	defer m.recordMu.Unlock()
-	var recs []session.Client
-	for _, r := range sess.Clients() {
-		if r.Addr != addr.String() {
-			recs = append(recs, r)
-		}
-	}
-	recs = append(recs, session.Client{Addr: addr.String(), Nonce: bytes.Clone(nonce)})
-	if len(recs) > maxRemembered {
-		recs = recs[len(recs)-maxRemembered:]
-	}
-	if err := sess.SetClients(recs); err != nil {
+	err := sess.UpdateClients(func(recs []session.Client) []session.Client {
+		recs = slices.DeleteFunc(recs, func(r session.Client) bool { return r.Addr == addr.String() })
+		recs = append(recs, session.Client{Addr: addr.String(), Nonce: bytes.Clone(nonce)})
+		return recs[max(len(recs)-maxRemembered, 0):]
+	})
+	if err != nil {
 		m.srv.Logf("udp: recording client %v: %v", addr, err)
 	}
 }
 
 // forget removes the record of the client at addr from sess.
 func (m *mux) forget(sess *session.Session, addr netip.AddrPort) {
-	m.recordMu.Lock()
-	defer m.recordMu.Unlock()
-	var recs []session.Client
-	for _, r := range sess.Clients() {
-		if r.Addr != addr.String() {
-			recs = append(recs, r)
-		}
-	}
-	if err := sess.SetClients(recs); err != nil {
+	err := sess.UpdateClients(func(recs []session.Client) []session.Client {
+		return slices.DeleteFunc(recs, func(r session.Client) bool { return r.Addr == addr.String() })
+	})
+	if err != nil {
 		m.srv.Logf("udp: forgetting client %v: %v", addr, err)
 	}
+}
+
+// drop forgets the client c, as when it detaches or loses authorization.
+func (m *mux) drop(c *client) {
+	m.mu.Lock()
+	if m.clients[c.addr] == c {
+		delete(m.clients, c.addr)
+	}
+	m.mu.Unlock()
+	c.stop()
+	m.forget(c.sess, c.addr)
+}
+
+// recheck drops attached clients that stop being authorized, as when their
+// tailnet address is reassigned to another user's node.
+func (m *mux) recheck() {
+	for {
+		changes := m.srv.Auth.Changes()
+		m.mu.Lock()
+		clients := slices.Collect(maps.Values(m.clients))
+		m.mu.Unlock()
+		for _, c := range clients {
+			if err := m.srv.Auth.Allow(m.ctx, c.addr.String()); err != nil {
+				m.srv.Logf("udp: dropping client %v: %v", c.addr, err)
+				m.drop(c)
+			}
+		}
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-changes:
+		}
+	}
+}
+
+// serves reports whether addr's address family is served by this mux's
+// socket. With one socket per Tailscale address, IPv4 and IPv6 clients
+// arrive on different sockets.
+func (m *mux) serves(addr netip.AddrPort) bool {
+	local, ok := addrFromNet(m.pc.LocalAddr())
+	if !ok || local.Addr().IsUnspecified() {
+		return true
+	}
+	return local.Addr().Is4() == addr.Addr().Unmap().Is4()
 }
 
 // resume reattaches the clients recorded in every session, as after a
@@ -316,13 +352,13 @@ func (m *mux) resume() {
 	for _, sess := range m.srv.Manager.Sessions() {
 		for _, r := range sess.Clients() {
 			addr, err := netip.ParseAddrPort(r.Addr)
-			if err != nil {
+			if err != nil || !m.serves(addr) {
 				continue
 			}
 			go func() {
 				// Tailnet addresses can be reassigned, so check the
 				// peer's identity again.
-				if _, err := m.srv.Auth.Allow(m.ctx, addr.String()); err != nil {
+				if err := m.srv.Auth.Allow(m.ctx, addr.String()); err != nil {
 					m.srv.Logf("udp: resuming %v: %v", addr, err)
 					m.forget(sess, addr)
 					return
@@ -536,6 +572,8 @@ func (c *client) handle(env proto.Envelope) {
 		c.handleResize(env.Resize)
 	case env.StateAck != nil:
 		c.handleStateAck(env.StateAck)
+	case env.Detach != nil:
+		c.mux.drop(c)
 	}
 }
 

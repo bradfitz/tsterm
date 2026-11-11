@@ -198,12 +198,13 @@ func (s *Session) Clients() []Client {
 	return append([]Client(nil), s.meta.Clients...)
 }
 
-// SetClients records the hot-path clients attached to the session in the
-// shim, where they survive a tstermd restart.
-func (s *Session) SetClients(clients []Client) error {
+// UpdateClients replaces the hot-path clients recorded for the session with
+// update's result, and stores them in the shim, where they survive a
+// tstermd restart. The update is atomic with respect to other calls.
+func (s *Session) UpdateClients(update func([]Client) []Client) error {
 	s.metaMu.Lock()
 	defer s.metaMu.Unlock()
-	s.meta.Clients = append([]Client(nil), clients...)
+	s.meta.Clients = update(append([]Client(nil), s.meta.Clients...))
 	return s.conn.SetMeta(encodeMeta(s.meta))
 }
 

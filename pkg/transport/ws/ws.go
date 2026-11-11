@@ -13,6 +13,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/bradfitz/tsterm/pkg/auth"
 	"github.com/bradfitz/tsterm/pkg/proto"
 	"github.com/bradfitz/tsterm/pkg/session"
 )
@@ -22,6 +23,12 @@ import (
 // caller has been authorized.
 type Server struct {
 	Manager *session.Manager
+
+	// Auth, if non-nil, is consulted again whenever the tailnet's
+	// addresses change, and a viewer whose peer is no longer authorized is
+	// disconnected. A viewer connection can last indefinitely, unlike the
+	// requests the TCP middleware checks.
+	Auth *auth.SelfUser
 
 	// Logf, if non-nil, logs per-connection errors. Defaults to no-op.
 	Logf func(format string, args ...any)
@@ -71,10 +78,31 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	if s.Auth != nil {
+		go s.recheck(ctx, cancel, r.RemoteAddr)
+	}
+
 	if err := s.pump(ctx, conn, sess); err != nil && !errors.Is(err, context.Canceled) {
 		s.Logf("ws: pump: %v", err)
 	}
 	conn.Close(websocket.StatusNormalClosure, "session ended")
+}
+
+// recheck cancels the connection's ctx once remoteAddr is no longer
+// authorized.
+func (s *Server) recheck(ctx context.Context, cancel context.CancelFunc, remoteAddr string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.Auth.Changes():
+		}
+		if err := s.Auth.Allow(ctx, remoteAddr); err != nil {
+			s.Logf("ws: disconnecting %s: %v", remoteAddr, err)
+			cancel()
+			return
+		}
+	}
 }
 
 func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.Session) error {

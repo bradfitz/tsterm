@@ -33,6 +33,9 @@ type Server struct {
 // Handler returns the assembled control-plane handler with auth applied.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.index)
+	mux.HandleFunc("GET /s/{id}", s.viewer)
+	mux.Handle("GET /static/", http.FileServerFS(webRoot))
 	mux.HandleFunc("GET /v1/sessions", s.list)
 	mux.HandleFunc("POST /v1/sessions", s.create)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.info)

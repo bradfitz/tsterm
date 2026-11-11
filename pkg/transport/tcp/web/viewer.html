@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{with .Name}}{{.}}{{else}}{{.ID}}{{end}} · tsterm</title>
+<link rel="stylesheet" href="/static/tsterm.css">
+</head>
+<body class="viewer">
+<header>
+<a href="/">← sessions</a>
+<code>{{.ID}}</code>{{with .Name}} <b>{{.}}</b>{{end}}
+<span id="status" class="dim">connecting…</span>
+</header>
+<pre id="screen" class="screen" data-id="{{.ID}}"></pre>
+<script src="/static/viewer.js"></script>
+</body>
+</html>

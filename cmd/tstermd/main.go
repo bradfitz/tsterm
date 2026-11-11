@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -66,7 +67,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	lc, listenTCP, listenUDP, closeNet, err := setupNet(ctx, *useTSNet, *stateDir, *hostname, *port, *udpPort, *bindAll)
+	lc, tcpLns, udpPCs, closeNet, err := setupNet(ctx, *useTSNet, *stateDir, *hostname, *port, *udpPort, *bindAll)
 	if err != nil {
 		log.Fatalf("tstermd: setup: %v", err)
 	}
@@ -76,6 +77,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("tstermd: auth: %v", err)
 	}
+	go a.Watch(ctx, lc, log.Printf)
 
 	mgr := session.NewManager(*runDir, launcher)
 	mgr.SetLogf(log.Printf)
@@ -91,6 +93,7 @@ func main() {
 
 	wsSrv := &ws.Server{
 		Manager: mgr,
+		Auth:    a,
 		Logf:    log.Printf,
 	}
 	tcpSrv := &tcp.Server{
@@ -105,30 +108,21 @@ func main() {
 		Logf:    log.Printf,
 	}
 
-	tcpLn, err := listenTCP()
-	if err != nil {
-		log.Fatalf("tstermd: listen tcp: %v", err)
+	errc := make(chan error, len(tcpLns)+len(udpPCs))
+	for _, ln := range tcpLns {
+		log.Printf("tstermd: HTTP on %s", ln.Addr())
+		go func() { errc <- tcp.Serve(ctx, ln, tcpSrv) }()
 	}
-	udpPC, err := listenUDP()
-	if err != nil {
-		log.Fatalf("tstermd: listen udp: %v", err)
+	for _, pc := range udpPCs {
+		log.Printf("tstermd: UDP on %s", pc.LocalAddr())
+		go func() { errc <- udp.Serve(ctx, pc, udpSrv) }()
 	}
-
-	log.Printf("tstermd: HTTP on %s, UDP on %s, self user %d", tcpLn.Addr(), udpPC.LocalAddr(), a.SelfUserID())
-
-	tcpErr := make(chan error, 1)
-	udpErr := make(chan error, 1)
-	go func() { tcpErr <- tcp.Serve(ctx, tcpLn, tcpSrv) }()
-	go func() { udpErr <- udp.Serve(ctx, udpPC, udpSrv) }()
+	log.Printf("tstermd: serving user %d", a.SelfUserID())
 
 	select {
-	case err := <-tcpErr:
+	case err := <-errc:
 		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("tstermd: tcp: %v", err)
-		}
-	case err := <-udpErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("tstermd: udp: %v", err)
+			log.Printf("tstermd: %v", err)
 		}
 	case <-ctx.Done():
 	}
@@ -136,61 +130,96 @@ func main() {
 	// Give in-flight handlers a moment to drain.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutdownCancel()
-	_ = tcpLn.Close()
-	_ = udpPC.Close()
+	for _, ln := range tcpLns {
+		_ = ln.Close()
+	}
+	for _, pc := range udpPCs {
+		_ = pc.Close()
+	}
 	<-shutdownCtx.Done()
 }
 
+// setupNet starts listening on the tailnet: one TCP listener and one UDP
+// socket per Tailscale address (IPv4 and IPv6), or one of each on all
+// interfaces with bindAll.
 func setupNet(
 	ctx context.Context,
 	useTSNet bool,
 	stateDir, hostname string,
 	tcpPort, udpPort int,
 	bindAll bool,
-) (auth.WhoIsClient, func() (net.Listener, error), func() (net.PacketConn, error), func(), error) {
+) (lc *local.Client, lns []net.Listener, pcs []net.PacketConn, closeNet func(), err error) {
+	closeNet = func() {}
+	defer func() {
+		if err != nil {
+			for _, ln := range lns {
+				ln.Close()
+			}
+			for _, pc := range pcs {
+				pc.Close()
+			}
+			closeNet()
+		}
+	}()
 	if useTSNet {
 		if err := os.MkdirAll(stateDir, 0o700); err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("mkdir state dir: %w", err)
 		}
 		host := hostname
 		if host == "" {
-			h, _ := os.Hostname()
-			host = h
+			host, _ = os.Hostname()
 		}
 		srv := &tsnet.Server{
 			Dir:      stateDir,
 			Hostname: host,
 		}
-		if err := srv.Start(); err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("tsnet start: %w", err)
+		if _, err := srv.Up(ctx); err != nil {
+			srv.Close()
+			return nil, nil, nil, nil, fmt.Errorf("tsnet up: %w", err)
 		}
-		lc, err := srv.LocalClient()
-		if err != nil {
-			_ = srv.Close()
+		closeNet = func() { _ = srv.Close() }
+		if lc, err = srv.LocalClient(); err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("tsnet local client: %w", err)
 		}
-		listenTCP := func() (net.Listener, error) {
-			return srv.Listen("tcp", ":"+strconv.Itoa(tcpPort))
+		// tsnet's TCP listener covers every Tailscale address; its UDP
+		// sockets each take one address.
+		ln, err := srv.Listen("tcp", ":"+strconv.Itoa(tcpPort))
+		if err != nil {
+			return nil, nil, nil, nil, err
 		}
-		listenUDP := func() (net.PacketConn, error) {
-			return srv.ListenPacket("udp", ":"+strconv.Itoa(udpPort))
+		lns = append(lns, ln)
+		ip4, ip6 := srv.TailscaleIPs()
+		for _, ip := range []netip.Addr{ip4, ip6} {
+			if !ip.IsValid() {
+				continue
+			}
+			pc, err := srv.ListenPacket("udp", netip.AddrPortFrom(ip, uint16(udpPort)).String())
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			pcs = append(pcs, pc)
 		}
-		close := func() { _ = srv.Close() }
-		return lc, listenTCP, listenUDP, close, nil
+		return lc, lns, pcs, closeNet, nil
 	}
 
-	lc := &local.Client{}
+	lc = &local.Client{}
 	bindAddrs, err := pickBindAddrs(ctx, lc, bindAll)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	listenTCP := func() (net.Listener, error) {
-		return net.Listen("tcp", net.JoinHostPort(bindAddrs[0], strconv.Itoa(tcpPort)))
+	for _, ip := range bindAddrs {
+		ln, err := net.Listen("tcp", net.JoinHostPort(ip, strconv.Itoa(tcpPort)))
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		lns = append(lns, ln)
+		pc, err := net.ListenPacket("udp", net.JoinHostPort(ip, strconv.Itoa(udpPort)))
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		pcs = append(pcs, pc)
 	}
-	listenUDP := func() (net.PacketConn, error) {
-		return net.ListenPacket("udp", net.JoinHostPort(bindAddrs[0], strconv.Itoa(udpPort)))
-	}
-	return lc, listenTCP, listenUDP, func() {}, nil
+	return lc, lns, pcs, closeNet, nil
 }
 
 // pickBindAddrs returns the addresses on which the daemon should listen.

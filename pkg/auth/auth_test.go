@@ -5,20 +5,23 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/bradfitz/tsterm/pkg/proto"
 
 	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
 )
 
 type fakeLC struct {
-	self  tailcfg.UserID
-	who   map[string]*apitype.WhoIsResponse
-	whoErr map[string]error
+	self      tailcfg.UserID
+	who       map[string]*apitype.WhoIsResponse
+	whoErr    map[string]error
 	statusErr error
 }
 
@@ -60,7 +63,7 @@ func TestAllowSameUser(t *testing.T) {
 		},
 	}
 	a := newAuth(t, lc)
-	if _, err := a.Allow(context.Background(), "100.64.0.5:51234"); err != nil {
+	if err := a.Allow(context.Background(), "100.64.0.5:51234"); err != nil {
 		t.Errorf("Allow same-user: %v", err)
 	}
 }
@@ -74,7 +77,7 @@ func TestDenyDifferentUser(t *testing.T) {
 		},
 	}
 	a := newAuth(t, lc)
-	_, err := a.Allow(context.Background(), "100.64.0.6:1")
+	err := a.Allow(context.Background(), "100.64.0.6:1")
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("Allow different-user: got %v, want ErrUnauthorized", err)
 	}
@@ -83,10 +86,10 @@ func TestDenyDifferentUser(t *testing.T) {
 func TestDenyWhoIsError(t *testing.T) {
 	lc := &fakeLC{
 		self:   1,
-		whoErr: map[string]error{"x": errors.New("boom")},
+		whoErr: map[string]error{"100.64.0.7:1": errors.New("boom")},
 	}
 	a := newAuth(t, lc)
-	_, err := a.Allow(context.Background(), "x")
+	err := a.Allow(context.Background(), "100.64.0.7:1")
 	if err == nil || errors.Is(err, ErrUnauthorized) {
 		t.Errorf("expected propagated WhoIs error, got %v", err)
 	}
@@ -95,10 +98,10 @@ func TestDenyWhoIsError(t *testing.T) {
 func TestDenyMissingNode(t *testing.T) {
 	lc := &fakeLC{
 		self: 1,
-		who:  map[string]*apitype.WhoIsResponse{"y": {Node: nil}},
+		who:  map[string]*apitype.WhoIsResponse{"100.64.0.8:1": {Node: nil}},
 	}
 	a := newAuth(t, lc)
-	_, err := a.Allow(context.Background(), "y")
+	err := a.Allow(context.Background(), "100.64.0.8:1")
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("missing-node should be unauthorized, got %v", err)
 	}
@@ -164,5 +167,88 @@ func TestHTTPMiddlewareDeniedReturnsCBORError(t *testing.T) {
 	}
 	if e.Code != "unauthorized" {
 		t.Errorf("error code = %q, want %q", e.Code, "unauthorized")
+	}
+}
+
+func TestDenyUnparseableAddr(t *testing.T) {
+	a := newAuth(t, &fakeLC{self: 1})
+	if err := a.Allow(context.Background(), "not-an-addr"); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("err = %v, want ErrUnauthorized", err)
+	}
+}
+
+// busStatus returns an initial IPN bus status for self, owned by user 1,
+// and the given peers.
+func busStatus(peers ...*ipnstate.PeerStatus) ipn.Notify {
+	st := &ipnstate.Status{
+		Self: &ipnstate.PeerStatus{NodeID: 1, UserID: 1, TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}},
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{},
+	}
+	for _, p := range peers {
+		st.Peer[key.NewNode().Public()] = p
+	}
+	return ipn.Notify{InitialStatus: st}
+}
+
+func TestIPNBusDrivesDecisions(t *testing.T) {
+	// The fake WhoIs knows nothing, so every decision below must come
+	// from the bus.
+	a := newAuth(t, &fakeLC{self: 1})
+	ctx := context.Background()
+	mine := netip.MustParseAddr("100.64.0.2")
+	mine6 := netip.MustParseAddr("fd7a:115c:a1e0::2")
+	theirs := netip.MustParseAddr("100.64.0.3")
+	a.ApplyNotify(busStatus(
+		&ipnstate.PeerStatus{NodeID: 2, UserID: 1, TailscaleIPs: []netip.Addr{mine, mine6}},
+		&ipnstate.PeerStatus{NodeID: 3, UserID: 99, TailscaleIPs: []netip.Addr{theirs}},
+	))
+	for addr, want := range map[string]bool{
+		"100.64.0.1:5":          true, // self
+		"100.64.0.2:5":          true,
+		"[fd7a:115c:a1e0::2]:5": true,
+		"[::ffff:100.64.0.2]:5": true, // v4-mapped
+		"100.64.0.3:5":          false,
+	} {
+		if got := a.Allow(ctx, addr) == nil; got != want {
+			t.Errorf("Allow(%s) = %v, want %v", addr, got, want)
+		}
+	}
+
+	// A node changing addresses wakes Changes and moves authorization.
+	changes := a.Changes()
+	a.ApplyNotify(ipn.Notify{PeersChanged: []*tailcfg.Node{{
+		ID:        3,
+		User:      99,
+		Addresses: []netip.Prefix{netip.PrefixFrom(mine, 32)},
+	}}})
+	select {
+	case <-changes:
+	default:
+		t.Fatal("Changes not closed after an address change")
+	}
+	if a.Allow(ctx, "100.64.0.2:5") == nil {
+		t.Error("address taken over by another user's node is still allowed")
+	}
+
+	// Removing that node makes its address unknown again, which falls
+	// back to WhoIs (and so is denied here).
+	a.ApplyNotify(ipn.Notify{PeersRemoved: []tailcfg.NodeID{3}})
+	if a.Allow(ctx, "100.64.0.3:5") == nil {
+		t.Error("removed node's address still allowed")
+	}
+}
+
+func TestIPNBusNoChangeNoWake(t *testing.T) {
+	a := newAuth(t, &fakeLC{self: 1})
+	a.ApplyNotify(busStatus())
+	changes := a.Changes()
+	// A redundant update must not wake waiters.
+	a.ApplyNotify(ipn.Notify{PeersChanged: []*tailcfg.Node{{
+		ID: 1, User: 1, Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.1/32")},
+	}}})
+	select {
+	case <-changes:
+		t.Error("Changes closed without a change")
+	default:
 	}
 }

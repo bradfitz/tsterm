@@ -7,6 +7,10 @@
 //	tsterm -new  HOST [NAME] create a new session and attach
 //	tsterm -kill HOST IDORNAME  kill a session
 //
+// While attached, Ctrl-^ (which many terminals also send for Ctrl-~)
+// followed by "." disconnects, leaving the session running. Ctrl-^ twice
+// sends a literal Ctrl-^.
+//
 // HOST may include :port; default control port is 2200. The client uses the
 // host's normal DNS / MagicDNS to reach HOST; no tsnet is embedded.
 package main
@@ -144,11 +148,17 @@ func usage() {
   tsterm -new  HOST [NAME] create a new session and attach
   tsterm -kill HOST IDORNAME  kill a session
 
+While attached, type Ctrl-^ (or Ctrl-~) then "." to disconnect, leaving
+the session running.
+
 flags:`)
 	flag.PrintDefaults()
 }
 
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "tsterm: %v\n", err)
+	if errors.Is(err, errDisconnected) {
+		os.Exit(0) // the user asked to leave
+	}
 	os.Exit(1)
 }

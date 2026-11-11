@@ -1,0 +1,26 @@
+:root { color-scheme: light dark; --dim: #888; }
+body { font-family: system-ui, sans-serif; margin: 2rem; }
+h1 { font-weight: 600; font-size: 1.4rem; }
+table { border-collapse: collapse; }
+th, td { text-align: left; padding: .35rem .9rem .35rem 0; border-bottom: 1px solid #8884; }
+th { font-weight: 600; }
+a { color: inherit; }
+.dim { color: var(--dim); }
+
+body.viewer { margin: 0; background: #000; color: #ddd; }
+body.viewer header { font-size: .85rem; padding: .4rem .8rem; background: #222; display: flex; gap: 1rem; align-items: baseline; }
+body.viewer header #status { margin-left: auto; }
+.screen {
+  margin: 0; padding: .5rem .8rem;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px; line-height: 1.2;
+  white-space: pre; overflow: auto;
+}
+.screen .cursor { outline: 1px solid #ddd; }
+.screen .bold { font-weight: bold; }
+.screen .faint { opacity: .6; }
+.screen .italic { font-style: italic; }
+.screen .underline { text-decoration: underline; }
+.screen .strike { text-decoration: line-through; }
+.screen .underline.strike { text-decoration: underline line-through; }
+.screen .conceal { visibility: hidden; }

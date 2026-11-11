@@ -36,6 +36,7 @@ type Envelope struct {
 	Ended    *Ended    `cbor:"7,keyasint,omitempty"`
 	State    *State    `cbor:"8,keyasint,omitempty"`
 	StateAck *StateAck `cbor:"9,keyasint,omitempty"`
+	Detach   *Detach   `cbor:"10,keyasint,omitempty"`
 }
 
 // Hello is the first packet a client sends on UDP attach. The server uses
@@ -130,6 +131,12 @@ type State struct {
 type StateAck struct {
 	State uint64 `cbor:"s,omitempty"`
 }
+
+// Detach tells the server that the client is leaving on purpose (the user
+// disconnected), so the server forgets it now rather than retrying screen
+// updates and holding its state until IdleTimeout. The session keeps
+// running.
+type Detach struct{}
 
 // Ended signals that the session has ended and includes a short status
 // string (typically the child's exit error or "closed").

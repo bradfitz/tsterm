@@ -132,6 +132,13 @@ func attach(ctx context.Context, ctrl *control, info proto.SessionInfo) error {
 	}()
 
 	wg.Wait()
+	if errors.Is(state.exitErr, errDisconnected) {
+		which := info.ID
+		if info.Name != "" {
+			which = info.Name
+		}
+		return fmt.Errorf("%w from %s; reattach with: tsterm %s %s", errDisconnected, info.ID, ctrl.host(), which)
+	}
 	return state.exitErr
 }
 
@@ -187,6 +194,8 @@ type attachState struct {
 
 	// Sleep detection: wall and monotonic time at the last timer run.
 	lastWall, lastMono time.Time
+
+	esc escaper // used only by writeLoop
 
 	exitErr error
 	closed  bool
@@ -327,7 +336,14 @@ func (s *attachState) writeLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			s.sendInput(chunk)
+			keys, disconnect := s.esc.filter(chunk)
+			if len(keys) > 0 {
+				s.sendInput(keys)
+			}
+			if disconnect {
+				s.disconnect()
+				return
+			}
 			timer.Reset(activeTick)
 		case <-timer.C:
 			timer.Reset(s.onTimer(time.Now()))
@@ -510,6 +526,22 @@ func (s *attachState) sendLocked(env proto.Envelope) {
 		return
 	}
 	_, _ = s.conn.Write(b)
+}
+
+// errDisconnected is returned by attach when the user disconnects with the
+// escape key.
+var errDisconnected = errors.New("disconnected")
+
+// disconnect ends the attach at the user's request, telling the server so
+// that it forgets this client now. The session keeps running.
+func (s *attachState) disconnect() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Best effort, and twice in case one is lost; there is no retry.
+	for range 2 {
+		s.sendLocked(proto.Envelope{Detach: &proto.Detach{}})
+	}
+	s.exitLocked(errDisconnected)
 }
 
 // exitLocked ends the attach with err (nil for a clean exit). Only the
