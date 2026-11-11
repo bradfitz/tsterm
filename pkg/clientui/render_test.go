@@ -130,3 +130,46 @@ func TestStatusOverlay(t *testing.T) {
 		t.Errorf("clearing status did not restore row 0: %q", out)
 	}
 }
+
+func TestModesMirroredToLocalTerminal(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf)
+	s := makeScreen(2, 5, "")
+	s.Modes = vt.Modes{Mouse: vt.MouseButton, MouseSGR: true, BracketedPaste: true}
+	r.Snapshot(proto.Snapshot{S: s})
+	out := buf.String()
+	for _, want := range []string{"\x1b[?1002h", "\x1b[?1006h", "\x1b[?2004h"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("snapshot output lacks %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b[?1004") || strings.Contains(out, "\x1b[?1h") {
+		t.Errorf("snapshot set modes the session does not have: %q", out)
+	}
+
+	// The program switches to any-motion tracking and drops SGR.
+	buf.Reset()
+	r.Apply(proto.Delta{D: vt.ScreenDelta{
+		Rows: 2, Cols: 5, ModesChanged: true,
+		Modes: vt.Modes{Mouse: vt.MouseAny, BracketedPaste: true, FocusEvents: true},
+	}})
+	out = buf.String()
+	for _, want := range []string{"\x1b[?1002l", "\x1b[?1003h", "\x1b[?1006l", "\x1b[?1004h"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("delta output lacks %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "2004") {
+		t.Errorf("unchanged bracketed paste re-sent: %q", out)
+	}
+
+	// Leaving turns it all off.
+	buf.Reset()
+	r.Close()
+	out = buf.String()
+	for _, want := range []string{"\x1b[?1003l", "\x1b[?2004l", "\x1b[?1004l"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Close output lacks %q: %q", want, out)
+		}
+	}
+}

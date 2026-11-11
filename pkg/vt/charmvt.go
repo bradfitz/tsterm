@@ -1,7 +1,11 @@
 package vt
 
 import (
+	"bytes"
 	"image/color"
+	"io"
+	"slices"
+	"strings"
 	"sync"
 
 	uv "github.com/charmbracelet/ultraviolet"
@@ -43,8 +47,16 @@ type charm struct {
 	bracketed   bool
 	appCursor   bool
 	mouseMode   MouseMode
+	mouseSGR    bool
+	focusEvents bool
 	cursorStyle CursorStyle
 	cursorBlink bool
+
+	barrier chan struct{} // see syncRepliesLocked
+	osc     oscState      // see hideST
+
+	replyMu sync.Mutex
+	replies []byte // collected by readReplies, taken by Replies
 }
 
 func newCharm(rows, cols int) *charm {
@@ -55,10 +67,12 @@ func newCharm(rows, cols int) *charm {
 		cursorVis:   true, // DECTCEM defaults to set
 		cursorStyle: CursorBlock,
 		cursorBlink: true,
+		barrier:     make(chan struct{}),
 	}
+	go c.readReplies()
 	c.emu.SetCallbacks(cvt.Callbacks{
 		Bell:      func() { c.bellSeq++ },
-		Title:     func(t string) { c.title = t },
+		Title:     func(t string) { c.title = unhideST(t) },
 		AltScreen: func(on bool) { c.altScreen = on },
 		CursorVisibility: func(visible bool) {
 			c.cursorVis = visible
@@ -107,12 +121,10 @@ func (c *charm) applyMode(m ansi.Mode, on bool) {
 		} else if c.mouseMode == MouseAny {
 			c.mouseMode = MouseOff
 		}
-	case 1006: // SGR mouse extension
-		if on {
-			c.mouseMode = MouseSGR
-		} else if c.mouseMode == MouseSGR {
-			c.mouseMode = MouseOff
-		}
+	case 1006: // SGR mouse encoding
+		c.mouseSGR = on
+	case 1004: // focus events
+		c.focusEvents = on
 	case 1047, 1049: // alternate screen
 		c.altScreen = on
 	case 2004: // bracketed paste
@@ -123,7 +135,85 @@ func (c *charm) applyMode(m ansi.Mode, on bool) {
 func (c *charm) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.emu.Write(p)
+	_, err := c.emu.Write(c.hideST(p))
+	c.syncRepliesLocked()
+	return len(p), err
+}
+
+// The emulator's parser ends an OSC string (a title, a hyperlink, and so
+// on) at byte 0x9C, the 8-bit C1 String Terminator. But this terminal is
+// UTF-8, where, as in xterm, C1 controls are not recognized, and 0x9C is a
+// UTF-8 continuation byte, as in "✳" (E2 9C B3), which Claude Code puts in
+// its title. Cut off there, the title is invalid UTF-8, and the rest of it
+// lands on the screen.
+//
+// So inside OSC strings, hideST replaces 0x9C with 0xFF, which the parser
+// collects like any other byte and which never occurs in UTF-8, and
+// unhideST reverses that in the strings that come out of OSC sequences.
+//
+// TODO(bradfitz): Fix this in github.com/charmbracelet/x/ansi instead.
+const hiddenST = 0xFF
+
+type oscState uint8
+
+const (
+	oscNone  oscState = iota
+	oscEsc            // after ESC, outside an OSC string
+	oscIn             // in an OSC string
+	oscInEsc          // after ESC in an OSC string
+)
+
+// hideST returns p with 0x9C bytes inside OSC strings replaced by hiddenST,
+// tracking OSC strings across calls. It returns p itself if nothing needs
+// replacing.
+func (c *charm) hideST(p []byte) []byte {
+	var out []byte
+	for i, b := range p {
+		switch c.osc {
+		case oscNone:
+			if b == 0x1b {
+				c.osc = oscEsc
+			}
+		case oscEsc:
+			switch b {
+			case ']':
+				c.osc = oscIn
+			case 0x1b:
+			default:
+				c.osc = oscNone
+			}
+		case oscIn:
+			switch b {
+			case 0x07, 0x18, 0x1a:
+				c.osc = oscNone
+			case 0x1b:
+				c.osc = oscInEsc
+			case 0x9c:
+				if out == nil {
+					out = slices.Clone(p)
+				}
+				out[i] = hiddenST
+			}
+		case oscInEsc:
+			// ESC \ (ST) ends the string, and any other ESC starts a
+			// new sequence, ending it too.
+			c.osc = oscNone
+			if b == ']' {
+				c.osc = oscIn
+			} else if b == 0x1b {
+				c.osc = oscEsc
+			}
+		}
+	}
+	if out == nil {
+		return p
+	}
+	return out
+}
+
+// unhideST restores the 0x9C bytes that hideST hid in s.
+func unhideST(s string) string {
+	return strings.ReplaceAll(s, string([]byte{hiddenST}), string([]byte{0x9c}))
 }
 
 func (c *charm) Resize(rows, cols int) {
@@ -133,7 +223,71 @@ func (c *charm) Resize(rows, cols int) {
 		return
 	}
 	c.rows, c.cols = rows, cols
-	c.emu.Resize(cols, rows)
+	c.emu.Resize(cols, rows) // may report the size, in in-band resize mode
+	c.syncRepliesLocked()
+}
+
+// The emulator writes its replies to queries into an io.Pipe, inside its
+// Write method, and that blocks until someone reads them. readReplies
+// reads them, forever, so that Write never blocks.
+//
+// To make every reply caused by a Write available when Write returns,
+// syncRepliesLocked sends replyBarrier through the same pipe and waits for
+// readReplies to see it: the pipe is ordered, so all earlier replies have
+// been collected by then. The barrier is a NUL followed by text that no
+// reply contains.
+const replyBarrier = "\x00tsterm-reply-barrier\x00"
+
+func (c *charm) readReplies() {
+	buf := make([]byte, 4096)
+	var pending []byte
+	for {
+		n, err := c.emu.Read(buf)
+		pending = append(pending, buf[:n]...)
+		for {
+			i := bytes.Index(pending, []byte(replyBarrier))
+			if i < 0 {
+				break
+			}
+			c.replyMu.Lock()
+			c.replies = append(c.replies, pending[:i]...)
+			c.replyMu.Unlock()
+			pending = pending[i+len(replyBarrier):]
+			c.barrier <- struct{}{}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (c *charm) syncRepliesLocked() {
+	if _, err := io.WriteString(c.emu.InputPipe(), replyBarrier); err != nil {
+		return // closed
+	}
+	<-c.barrier
+}
+
+// Close stops the reply reader. The screen remains readable.
+//
+// It closes the emulator's reply pipe directly rather than calling the
+// emulator's Close, which sets a flag that the emulator's Read checks
+// without synchronization.
+func (c *charm) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pw, ok := c.emu.InputPipe().(*io.PipeWriter); ok {
+		return pw.Close()
+	}
+	return c.emu.Close()
+}
+
+func (c *charm) Replies() []byte {
+	c.replyMu.Lock()
+	defer c.replyMu.Unlock()
+	r := c.replies
+	c.replies = nil
+	return r
 }
 
 func (c *charm) Size() (int, int) {
@@ -155,6 +309,8 @@ func (c *charm) snapshotModes() Modes {
 		BracketedPaste:    c.bracketed,
 		ApplicationCursor: c.appCursor,
 		Mouse:             c.mouseMode,
+		MouseSGR:          c.mouseSGR,
+		FocusEvents:       c.focusEvents,
 	}
 }
 
@@ -195,7 +351,7 @@ func (c *charm) snapshotLocked() Screen {
 		Cols:    c.cols,
 		Cells:   cells,
 		Cursor:  CursorState{Row: pos.Y, Col: pos.X, Visible: c.cursorVis, Style: c.cursorStyle, Blink: c.cursorBlink},
-		Title:   c.title,
+		Title:   strings.ToValidUTF8(c.title, "\uFFFD"),
 		BellSeq: c.bellSeq,
 		Modes:   c.snapshotModes(),
 	}
@@ -252,10 +408,10 @@ func mapCursorStyle(s cvt.CursorStyle) CursorStyle {
 
 func convertCell(c *uv.Cell) Cell {
 	out := Cell{
-		Grapheme: c.Content,
+		Grapheme: strings.ToValidUTF8(c.Content, "\uFFFD"),
 		Width:    uint8(c.Width),
 		Style:    convertStyle(c.Style),
-		Link:     c.Link.URL,
+		Link:     strings.ToValidUTF8(unhideST(linkURI(c.Link)), "\uFFFD"),
 	}
 	if out.Grapheme == "" {
 		out.Grapheme = " "
@@ -265,6 +421,14 @@ func convertCell(c *uv.Cell) Cell {
 	}
 	return out
 }
+
+// linkURI returns l's URI. The emulator parses OSC 8, which is
+// "8;params;URI", into URL=params and Params=URI, the reverse of what the
+// field names say.
+//
+// TODO(bradfitz): Fix this in github.com/charmbracelet/x/vt, which also
+// drops links whose URI contains ';'.
+func linkURI(l uv.Link) string { return l.Params }
 
 func convertStyle(s uv.Style) Style {
 	out := Style{

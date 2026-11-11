@@ -41,7 +41,7 @@ func (c *control) host() string {
 
 func (c *control) list(ctx context.Context) ([]proto.SessionSummary, error) {
 	var out []proto.SessionSummary
-	if err := c.do(ctx, "GET", "/v1/sessions", nil, &out); err != nil {
+	if err := c.do(ctx, "GET", "/v1/sessions?sort=activity", nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

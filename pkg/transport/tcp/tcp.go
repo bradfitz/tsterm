@@ -8,10 +8,13 @@ package tcp
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/bradfitz/tsterm/pkg/auth"
 	"github.com/bradfitz/tsterm/pkg/proto"
@@ -66,32 +69,50 @@ func Serve(ctx context.Context, ln net.Listener, s *Server) error {
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
-	summaries := s.Manager.List()
+	summaries := s.Manager.List() // by creation time
+	switch sortBy := r.URL.Query().Get("sort"); sortBy {
+	case "", "created":
+	case "activity":
+		slices.SortStableFunc(summaries, func(a, b session.Summary) int {
+			return b.LastActivity().Compare(a.LastActivity())
+		})
+	case "attach":
+		slices.SortStableFunc(summaries, func(a, b session.Summary) int {
+			return b.LastAttach.Compare(a.LastAttach)
+		})
+	default:
+		writeError(w, r, http.StatusBadRequest, "bad_sort", `sort must be "created", "activity", or "attach"`)
+		return
+	}
 	wire := make([]proto.SessionSummary, 0, len(summaries))
 	for _, sm := range summaries {
 		wire = append(wire, proto.SessionSummary{
-			ID:       string(sm.ID),
-			Name:     sm.Name,
-			Rows:     sm.Rows,
-			Cols:     sm.Cols,
-			Created:  sm.Created,
-			Active:   sm.Active,
-			Watchers: sm.Watchers,
+			ID:           string(sm.ID),
+			Name:         sm.Name,
+			Rows:         sm.Rows,
+			Cols:         sm.Cols,
+			Created:      sm.Created,
+			Active:       sm.Active,
+			Watchers:     sm.Watchers,
+			LastInput:    sm.LastInput,
+			LastOutput:   sm.LastOutput,
+			LastActivity: sm.LastActivity(),
+			LastAttach:   sm.LastAttach,
 		})
 	}
-	writeCBOR(w, http.StatusOK, wire)
+	writeResponse(w, r, http.StatusOK, wire)
 }
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64*1024))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "body", err.Error())
+		writeError(w, r, http.StatusBadRequest, "body", err.Error())
 		return
 	}
 	var req proto.CreateSessionReq
 	if len(body) > 0 {
-		if err := proto.Decode(body, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "decode", err.Error())
+		if err := decodeRequest(r, body, &req); err != nil {
+			writeError(w, r, http.StatusBadRequest, "decode", err.Error())
 			return
 		}
 	}
@@ -110,39 +131,39 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.Manager.Create(cfg)
 	if err != nil {
 		if errors.Is(err, session.ErrNameTaken) {
-			writeError(w, http.StatusConflict, "name_taken", err.Error())
+			writeError(w, r, http.StatusConflict, "name_taken", err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create", err.Error())
+		writeError(w, r, http.StatusInternalServerError, "create", err.Error())
 		return
 	}
-	writeCBOR(w, http.StatusCreated, s.infoFor(sess))
+	writeResponse(w, r, http.StatusCreated, s.infoFor(sess))
 }
 
 func (s *Server) info(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.resolveOr404(w, r.PathValue("id"))
+	sess, ok := s.resolveOr404(w, r)
 	if !ok {
 		return
 	}
-	writeCBOR(w, http.StatusOK, s.infoFor(sess))
+	writeResponse(w, r, http.StatusOK, s.infoFor(sess))
 }
 
 func (s *Server) kill(w http.ResponseWriter, r *http.Request) {
 	if err := s.Manager.Kill(r.PathValue("id")); err != nil {
 		if errors.Is(err, session.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			writeError(w, r, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "kill", err.Error())
+		writeError(w, r, http.StatusInternalServerError, "kill", err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) resolveOr404(w http.ResponseWriter, id string) (*session.Session, bool) {
-	sess, err := s.Manager.Resolve(id)
+func (s *Server) resolveOr404(w http.ResponseWriter, r *http.Request) (*session.Session, bool) {
+	sess, err := s.Manager.Resolve(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		writeError(w, r, http.StatusNotFound, "not_found", err.Error())
 		return nil, false
 	}
 	return sess, true
@@ -160,20 +181,40 @@ func (s *Server) infoFor(sess *session.Session) proto.SessionInfo {
 	}
 }
 
-func writeCBOR(w http.ResponseWriter, status int, v any) {
-	b, err := proto.Encode(v)
+// wantJSON reports whether the client asked for JSON rather than CBOR,
+// with an Accept header or ?format=json.
+func wantJSON(r *http.Request) bool {
+	return r.URL.Query().Get("format") == "json" ||
+		strings.Contains(r.Header.Get("Accept"), "application/json")
+}
+
+func decodeRequest(r *http.Request, body []byte, v any) error {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return json.Unmarshal(body, v)
+	}
+	return proto.Decode(body, v)
+}
+
+// writeResponse writes v as CBOR, or as JSON if the client asked for it.
+func writeResponse(w http.ResponseWriter, r *http.Request, status int, v any) {
+	ctype := proto.ContentType
+	var b []byte
+	var err error
+	if wantJSON(r) {
+		ctype = "application/json"
+		b, err = json.Marshal(v)
+	} else {
+		b, err = proto.Encode(v)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", proto.ContentType)
+	w.Header().Set("Content-Type", ctype)
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
 }
 
-func writeError(w http.ResponseWriter, status int, code, msg string) {
-	w.Header().Set("Content-Type", proto.ContentType)
-	w.WriteHeader(status)
-	b, _ := proto.Encode(proto.Error{Code: code, Message: msg})
-	_, _ = w.Write(b)
+func writeError(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
+	writeResponse(w, r, status, proto.Error{Code: code, Message: msg})
 }

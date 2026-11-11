@@ -3,6 +3,8 @@ package vt
 import (
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 // writeString feeds s to t and fails the test if Write returns an error or a
@@ -253,5 +255,129 @@ func TestScreenEqual(t *testing.T) {
 	term.Write([]byte("\x07"))
 	if b.Equal(term.Snapshot()) {
 		t.Fatal("snapshots differing only in BellSeq reported Equal")
+	}
+}
+
+func TestQueriesAreAnswered(t *testing.T) {
+	term := New(5, 20)
+	defer term.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Before replies were drained, the first query blocked Write
+		// forever.
+		term.Write([]byte("ab\x1b[c\x1b[6n\x1b]11;?\x07"))
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Write blocked on a terminal query")
+	}
+	r := string(term.Replies())
+	for _, want := range []string{
+		"\x1b[?",    // device attributes
+		"\x1b[1;3R", // cursor at row 1, column 3
+		"\x1b]11;",  // background color
+	} {
+		if !strings.Contains(r, want) {
+			t.Errorf("replies %q lack %q", r, want)
+		}
+	}
+	if r := term.Replies(); len(r) != 0 {
+		t.Errorf("Replies not cleared: %q", r)
+	}
+	term.Write([]byte("no queries here"))
+	if r := term.Replies(); len(r) != 0 {
+		t.Errorf("replies without queries: %q", r)
+	}
+}
+
+func TestWriteAfterClose(t *testing.T) {
+	term := New(2, 10)
+	term.Write([]byte("hi"))
+	term.Close()
+	done := make(chan struct{})
+	go func() { term.Write([]byte("\x1b[6n")); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Write after Close blocked")
+	}
+	if !strings.Contains(term.Snapshot().Cells[0][0].Grapheme, "h") {
+		t.Error("screen unreadable after Close")
+	}
+}
+
+func TestMouseModes(t *testing.T) {
+	term := New(2, 10)
+	defer term.Close()
+	check := func(when string, want Modes) {
+		t.Helper()
+		m := term.Modes()
+		if m.Mouse != want.Mouse || m.MouseSGR != want.MouseSGR || m.FocusEvents != want.FocusEvents {
+			t.Errorf("%s: mouse %v sgr %v focus %v; want %v %v %v",
+				when, m.Mouse, m.MouseSGR, m.FocusEvents, want.Mouse, want.MouseSGR, want.FocusEvents)
+		}
+	}
+	term.Write([]byte("\x1b[?1002h\x1b[?1006h\x1b[?1004h"))
+	// Before the encoding was separate, SGR replaced the tracking mode.
+	check("after enabling", Modes{Mouse: MouseButton, MouseSGR: true, FocusEvents: true})
+	term.Write([]byte("\x1b[?1006l"))
+	check("after disabling SGR", Modes{Mouse: MouseButton, FocusEvents: true})
+	term.Write([]byte("\x1b[?1000l")) // a different mode: no effect
+	check("after disabling another mode", Modes{Mouse: MouseButton, FocusEvents: true})
+	term.Write([]byte("\x1b[?1002l\x1b[?1004l"))
+	check("after disabling all", Modes{})
+}
+
+func TestTitleWith9CByte(t *testing.T) {
+	// "✳" is E2 9C B3; 0x9C is also the C1 String Terminator. This is the
+	// title Claude Code sets.
+	const title = "✳ Claude Code"
+	for _, osc := range []string{
+		"\x1b]0;" + title + "\x07",
+		"\x1b]2;" + title + "\x1b\\",
+	} {
+		term := New(2, 20)
+		// Split across writes, to exercise the cross-call tracking.
+		mid := len(osc) / 2
+		term.Write([]byte(osc[:mid]))
+		term.Write([]byte(osc[mid:] + "ok"))
+		s := term.Snapshot()
+		if s.Title != title {
+			t.Errorf("title = %q, want %q", s.Title, title)
+		}
+		if got := s.Cells[0][0].Grapheme + s.Cells[0][1].Grapheme + s.Cells[0][2].Grapheme; got != "ok " {
+			t.Errorf("screen starts %q, want %q; the title leaked onto it", got, "ok ")
+		}
+		if s.BellSeq != 0 {
+			t.Errorf("BellSeq = %d; the title's BEL rang", s.BellSeq)
+		}
+		term.Close()
+	}
+}
+
+func TestHyperlinkWith9CByte(t *testing.T) {
+	term := New(1, 10)
+	defer term.Close()
+	const url = "https://example.com/✓" // ✓ is E2 9C 93
+	term.Write([]byte("\x1b]8;;" + url + "\x1b\\L\x1b]8;;\x1b\\"))
+	if got := term.Snapshot().Cells[0][0].Link; got != url {
+		t.Errorf("link = %q, want %q", got, url)
+	}
+}
+
+func TestSnapshotStringsAreValidUTF8(t *testing.T) {
+	term := New(1, 10)
+	defer term.Close()
+	term.Write([]byte("\x1b]2;bad\xe2title\x07a\xffb"))
+	s := term.Snapshot()
+	if !utf8.ValidString(s.Title) {
+		t.Errorf("title %q is not valid UTF-8", s.Title)
+	}
+	for _, c := range s.Cells[0] {
+		if !utf8.ValidString(c.Grapheme) {
+			t.Errorf("grapheme %q is not valid UTF-8", c.Grapheme)
+		}
 	}
 }

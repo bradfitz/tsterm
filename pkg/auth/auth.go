@@ -199,7 +199,15 @@ func (a *SelfUser) rebuildLocked() {
 	owner := map[netip.Addr]tailcfg.UserID{}
 	for _, nd := range a.nodes {
 		for _, ip := range nd.addrs {
-			owner[ip.Unmap()] = nd.user
+			ip = ip.Unmap()
+			if prev, ok := owner[ip]; ok && prev != nd.user {
+				// Nodes of different users claim the address, as
+				// briefly while it moves between them. Trust neither;
+				// user 0 is nobody.
+				owner[ip] = 0
+				continue
+			}
+			owner[ip] = nd.user
 		}
 	}
 	if a.owner != nil && maps.Equal(owner, a.owner) {

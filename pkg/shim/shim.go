@@ -139,6 +139,8 @@ type server struct {
 
 	rows, cols int
 	meta       []byte
+	lastInput  time.Time
+	lastOutput time.Time
 	exited     bool
 	exitStatus string
 	ctrl       *conn // current controller, if any
@@ -165,6 +167,7 @@ func (s *server) readPTY() {
 			s.mu.Lock()
 			if !s.exited {
 				s.buf = append(s.buf, b[:n]...)
+				s.lastOutput = time.Now()
 				s.cond.Broadcast()
 			}
 			s.mu.Unlock()
@@ -260,6 +263,9 @@ func (s *server) info() shimproto.Info {
 		Started:    s.started,
 		Exited:     s.exited,
 		ExitStatus: s.exitStatus,
+		LastInput:  s.lastInput,
+		LastOutput: s.lastOutput,
+		OutputEnd:  s.end(),
 		Meta:       s.meta,
 	}
 }
@@ -359,6 +365,9 @@ func (s *server) stream(c *conn) {
 func (s *server) handle(typ shimproto.Type, payload []byte) error {
 	switch typ {
 	case shimproto.TypeInput:
+		s.mu.Lock()
+		s.lastInput = time.Now()
+		s.mu.Unlock()
 		_, err := s.pty.Write(payload)
 		return err
 	case shimproto.TypeResize:

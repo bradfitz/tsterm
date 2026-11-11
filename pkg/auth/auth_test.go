@@ -227,7 +227,19 @@ func TestIPNBusDrivesDecisions(t *testing.T) {
 		t.Fatal("Changes not closed after an address change")
 	}
 	if a.Allow(ctx, "100.64.0.2:5") == nil {
-		t.Error("address taken over by another user's node is still allowed")
+		t.Error("address claimed by another user's node is still allowed")
+	}
+	// Once the old node gives the address up, it is the new owner's.
+	a.ApplyNotify(ipn.Notify{PeersChanged: []*tailcfg.Node{{
+		ID:        2,
+		User:      1,
+		Addresses: []netip.Prefix{netip.PrefixFrom(mine6, 128)},
+	}}})
+	if a.Allow(ctx, "100.64.0.2:5") == nil {
+		t.Error("address now owned by another user is still allowed")
+	}
+	if a.Allow(ctx, "[fd7a:115c:a1e0::2]:5") != nil {
+		t.Error("node's remaining address no longer allowed")
 	}
 
 	// Removing that node makes its address unknown again, which falls

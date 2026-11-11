@@ -3,11 +3,15 @@
 package tcp
 
 import (
+	"encoding/json/v2"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/bradfitz/tsterm/pkg/proto"
 	"github.com/bradfitz/tsterm/pkg/pty"
 	"github.com/bradfitz/tsterm/pkg/session"
 )
@@ -75,5 +79,49 @@ func TestWebForbiddenIsHTMLForBrowsers(t *testing.T) {
 	// API clients still get CBOR.
 	if _, ctype, _ := get(t, hts.URL+"/v1/sessions", ""); ctype != "application/cbor" {
 		t.Errorf("API 403 content type = %q", ctype)
+	}
+}
+
+func TestListJSONSortedByActivity(t *testing.T) {
+	srv, hts := newTestServer(t, &allowAllLC{user: 1})
+	var ids []string
+	for range 3 {
+		sess, err := srv.Manager.Create(session.Config{PTY: pty.Config{Command: "/bin/cat"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, string(sess.ID()))
+	}
+	// Type into the first session last, making it the most recently active.
+	time.Sleep(10 * time.Millisecond)
+	for _, i := range []int{1, 2, 0} {
+		s, _ := srv.Manager.Resolve(ids[i])
+		s.WriteInput([]byte("x"))
+		time.Sleep(10 * time.Millisecond)
+	}
+	code, ctype, body := get(t, hts.URL+"/v1/sessions?sort=activity", "application/json")
+	if code != 200 || ctype != "application/json" {
+		t.Fatalf("list: %d %s %s", code, ctype, body)
+	}
+	var list []proto.SessionSummary
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range list {
+		got = append(got, s.ID)
+		// cat's echo makes output follow the input.
+		if s.LastInput.IsZero() || s.LastActivity.Before(s.LastInput) {
+			t.Errorf("%s: lastInput %v, lastActivity %v", s.ID, s.LastInput, s.LastActivity)
+		}
+	}
+	if want := []string{ids[0], ids[2], ids[1]}; !slices.Equal(got, want) {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+	if !strings.Contains(body, `"lastActivity":`) {
+		t.Errorf("JSON lacks lastActivity: %s", body)
+	}
+	if code, _, _ := get(t, hts.URL+"/v1/sessions?sort=bogus", "application/json"); code != 400 {
+		t.Errorf("bad sort: %d, want 400", code)
 	}
 }

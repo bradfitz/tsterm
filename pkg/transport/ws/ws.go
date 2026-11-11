@@ -81,6 +81,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	if s.Auth != nil {
 		go s.recheck(ctx, cancel, r.RemoteAddr)
 	}
+	if err := sess.MarkAttached(); err != nil {
+		s.Logf("ws: recording attach: %v", err)
+	}
 
 	if err := s.pump(ctx, conn, sess); err != nil && !errors.Is(err, context.Canceled) {
 		s.Logf("ws: pump: %v", err)

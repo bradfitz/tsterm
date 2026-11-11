@@ -250,6 +250,9 @@ func (m *mux) attach(addr netip.AddrPort, h *proto.Hello) {
 	m.addClientLocked(addr, sess, h.Nonce, h.InputAcked)
 	m.mu.Unlock()
 	m.remember(sess, addr, h.Nonce)
+	if err := sess.MarkAttached(); err != nil {
+		m.srv.Logf("udp: recording attach: %v", err)
+	}
 }
 
 // addClientLocked registers a client and starts its goroutine, which

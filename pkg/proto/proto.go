@@ -10,6 +10,8 @@
 //
 // Control-plane requests and responses are not enveloped; the route already
 // implies the type, so the body is the bare CBOR encoding of the struct.
+// The control plane also speaks JSON, for browsers and other clients that
+// lack CBOR, using the json field names below.
 package proto
 
 import (
@@ -150,42 +152,51 @@ const EndedNoSession = "no such session"
 
 // SessionSummary is the control-plane row returned by GET /v1/sessions and
 // by name lookups.
+//
+// The activity times are zero if the event has never happened. Sorting by
+// LastActivity puts the sessions where something last happened first;
+// sorting by LastAttach puts the ones last looked at first.
 type SessionSummary struct {
-	ID       string    `cbor:"id"`
-	Name     string    `cbor:"name"`
-	Rows     int       `cbor:"r"`
-	Cols     int       `cbor:"c"`
-	Created  time.Time `cbor:"t"`
-	Active   bool      `cbor:"a"`
-	Watchers int       `cbor:"w"`
+	ID       string    `cbor:"id" json:"id"`
+	Name     string    `cbor:"name" json:"name,omitzero"`
+	Rows     int       `cbor:"r" json:"rows"`
+	Cols     int       `cbor:"c" json:"cols"`
+	Created  time.Time `cbor:"t" json:"created"`
+	Active   bool      `cbor:"a" json:"active"`
+	Watchers int       `cbor:"w" json:"watchers"`
+
+	LastInput    time.Time `cbor:"li" json:"lastInput,omitzero"`    // keyboard input sent to the session
+	LastOutput   time.Time `cbor:"lo" json:"lastOutput,omitzero"`   // output from the session, changing its screen
+	LastActivity time.Time `cbor:"lx" json:"lastActivity,omitzero"` // the later of LastInput and LastOutput
+	LastAttach   time.Time `cbor:"la" json:"lastAttach,omitzero"`   // a client attached to look at the session
 }
 
 // CreateSessionReq is the body of POST /v1/sessions.
 type CreateSessionReq struct {
-	Name string   `cbor:"name,omitempty"`
-	Cmd  []string `cbor:"cmd,omitempty"`
-	Env  []string `cbor:"env,omitempty"`
-	Rows int      `cbor:"r,omitempty"`
-	Cols int      `cbor:"c,omitempty"`
+	Name string   `cbor:"name,omitempty" json:"name,omitzero"`
+	Cmd  []string `cbor:"cmd,omitempty" json:"cmd,omitzero"`
+	Env  []string `cbor:"env,omitempty" json:"env,omitzero"`
+	Rows int      `cbor:"r,omitempty" json:"rows,omitzero"`
+	Cols int      `cbor:"c,omitempty" json:"cols,omitzero"`
 }
 
 // SessionInfo is returned by POST /v1/sessions and by GET /v1/sessions/{id}.
 // Token is the per-session capability that UDP clients must echo back in
 // every Hello.
 type SessionInfo struct {
-	ID      string `cbor:"id"`
-	Name    string `cbor:"name"`
-	Token   []byte `cbor:"tok"`
-	UDPPort int    `cbor:"udp"`
-	Rows    int    `cbor:"r"`
-	Cols    int    `cbor:"c"`
+	ID      string `cbor:"id" json:"id"`
+	Name    string `cbor:"name" json:"name,omitzero"`
+	Token   []byte `cbor:"tok" json:"token"`
+	UDPPort int    `cbor:"udp" json:"udpPort"`
+	Rows    int    `cbor:"r" json:"rows"`
+	Cols    int    `cbor:"c" json:"cols"`
 }
 
 // Error is a structured error body returned with non-2xx control-plane
 // responses.
 type Error struct {
-	Code    string `cbor:"code"`
-	Message string `cbor:"msg"`
+	Code    string `cbor:"code" json:"code"`
+	Message string `cbor:"msg" json:"message"`
 }
 
 // Encode serializes v to CBOR.

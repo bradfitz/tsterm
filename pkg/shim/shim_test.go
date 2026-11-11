@@ -319,3 +319,30 @@ func TestCancelKillsChild(t *testing.T) {
 
 // processAlive returns nil if pid exists.
 func processAlive(pid int) error { return syscall.Kill(pid, 0) }
+
+func TestActivityTimesInInfo(t *testing.T) {
+	sock, _ := startShim(t, Options{}, "stty -echo; echo ready; cat >/dev/null")
+	c := dial(t, sock)
+	if !c.Info.LastInput.IsZero() {
+		t.Errorf("LastInput = %v before any input", c.Info.LastInput)
+	}
+	if _, err := c.Attach(); err != nil {
+		t.Fatal(err)
+	}
+	readUntil(t, c, "ready")
+	before := time.Now()
+	c.Input([]byte("x\n"))
+	time.Sleep(100 * time.Millisecond)
+
+	info := dial(t, sock).Info
+	if info.LastInput.Before(before) {
+		t.Errorf("LastInput = %v, want after %v", info.LastInput, before)
+	}
+	if info.LastOutput.IsZero() || info.LastOutput.After(before) {
+		// "ready" was the only output, and it came before the input.
+		t.Errorf("LastOutput = %v, want before %v", info.LastOutput, before)
+	}
+	if info.OutputEnd != uint64(len("ready\r\n")) {
+		t.Errorf("OutputEnd = %d, want %d", info.OutputEnd, len("ready\r\n"))
+	}
+}

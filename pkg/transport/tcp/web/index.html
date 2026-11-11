@@ -10,11 +10,13 @@
 <h1>tsterm sessions</h1>
 {{if .}}
 <table>
-<thead><tr><th>Session</th><th>Name</th><th>Size</th><th>Age</th><th>Watchers</th></tr></thead>
+<thead><tr><th>Session</th><th>Name</th><th>Active</th><th>Viewed</th><th>Size</th><th>Started</th><th>Watchers</th></tr></thead>
 <tbody>
 {{range .}}<tr>
 <td><a href="/s/{{.ID}}"><code>{{.ID}}</code></a></td>
 <td>{{with .Name}}{{.}}{{else}}<span class="dim">–</span>{{end}}</td>
+<td>{{.Activity}}</td>
+<td>{{.Attach}}</td>
 <td>{{.Size}}</td>
 <td>{{.Age}}</td>
 <td>{{.Watchers}}</td>

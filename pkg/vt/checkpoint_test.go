@@ -33,6 +33,7 @@ func TestRepaintRoundTrip(t *testing.T) {
 		{"link", "see \x1b]8;;https://example.com/\x1b\\here\x1b]8;;\x1b\\ ok"},
 		{"title", "\x1b]2;my title\x07$ "},
 		{"modes", "\x1b[?1h\x1b[?2004h\x1b[?1000hmodes"},
+		{"mouse sgr focus", "\x1b[?1002h\x1b[?1006h\x1b[?1004hmouse"},
 		{"cursor", "\x1b[5 q\x1b[?25l\x1b[3;7Hcur"},
 		{"steady block", "\x1b[2 qx"},
 		{"full last row", strings.Repeat("x", 10*4)},
@@ -41,6 +42,9 @@ func TestRepaintRoundTrip(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			orig, restored := roundTrip(t, 4, 10, tt.out)
+			if tt.name == "link" && orig.Cells[0][4].Link != "https://example.com/" {
+				t.Fatalf("original screen has no link to round-trip: %+v", orig.Cells[0][4])
+			}
 			if !orig.Equal(restored) {
 				t.Errorf("restored screen differs\norig:     %+v\nrestored: %+v", orig, restored)
 			}

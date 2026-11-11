@@ -25,6 +25,10 @@ type Renderer struct {
 	style  vt.Style
 	cur    vt.CursorState
 	status string // overlay on the top row, if non-empty
+
+	// local is the input modes set on the user's terminal, mirroring the
+	// session's; see syncModes.
+	local vt.Modes
 }
 
 // New returns a Renderer that writes to w.
@@ -46,6 +50,7 @@ func (r *Renderer) Snapshot(snap proto.Snapshot) {
 	}
 	r.last = s
 	r.cur = s.Cursor
+	r.syncModes(&sb, s.Modes)
 	r.writeStatus(&sb)
 	moveTo(&sb, s.Cursor.Row, s.Cursor.Col)
 	writeCursorVisibility(&sb, s.Cursor.Visible)
@@ -119,8 +124,51 @@ func (r *Renderer) Apply(delta proto.Delta) {
 	r.last.Cursor = d.Cursor
 	if d.ModesChanged {
 		r.last.Modes = d.Modes
+		r.syncModes(&sb, d.Modes)
 	}
 	_, _ = io.WriteString(r.w, sb.String())
+}
+
+// syncModes sets the user's terminal's input modes to match the session's
+// modes m. The program in the session asked tstermd's terminal for, say,
+// mouse events, but only the user's terminal can produce them: they then
+// arrive as ordinary input and are forwarded to the program. The session is
+// sized to match the user's terminal, so mouse coordinates need no
+// translation.
+func (r *Renderer) syncModes(sb *strings.Builder, m vt.Modes) {
+	set := func(mode int, on bool) {
+		if on {
+			fmt.Fprintf(sb, "\x1b[?%dh", mode)
+		} else {
+			fmt.Fprintf(sb, "\x1b[?%dl", mode)
+		}
+	}
+	old := r.local
+	if m.ApplicationCursor != old.ApplicationCursor {
+		set(1, m.ApplicationCursor)
+	}
+	if m.BracketedPaste != old.BracketedPaste {
+		set(2004, m.BracketedPaste)
+	}
+	if m.FocusEvents != old.FocusEvents {
+		set(1004, m.FocusEvents)
+	}
+	if m.Mouse != old.Mouse {
+		if old.Mouse != vt.MouseOff {
+			set(old.Mouse.DECMode(), false)
+		}
+		if m.Mouse != vt.MouseOff {
+			set(m.Mouse.DECMode(), true)
+		}
+	}
+	if m.MouseSGR != old.MouseSGR {
+		set(1006, m.MouseSGR)
+	}
+	r.local.ApplicationCursor = m.ApplicationCursor
+	r.local.BracketedPaste = m.BracketedPaste
+	r.local.FocusEvents = m.FocusEvents
+	r.local.Mouse = m.Mouse
+	r.local.MouseSGR = m.MouseSGR
 }
 
 // SetStatus overlays msg in reverse video across the top row of the screen.
@@ -167,9 +215,14 @@ func (r *Renderer) writeStatus(sb *strings.Builder) {
 }
 
 // Close emits a reset so the terminal returns to a sensible state for the
-// shell that follows. It also restores cursor visibility.
+// shell that follows: it restores cursor visibility and turns off every
+// input mode mirrored from the session, so that, say, mouse reporting does
+// not outlive the session.
 func (r *Renderer) Close() {
-	_, _ = io.WriteString(r.w, "\x1b[0m\x1b[?25h")
+	var sb strings.Builder
+	sb.WriteString("\x1b[0m\x1b[?25h")
+	r.syncModes(&sb, vt.Modes{})
+	_, _ = io.WriteString(r.w, sb.String())
 }
 
 // applyRun mirrors a CellRun into the renderer's last Screen so subsequent

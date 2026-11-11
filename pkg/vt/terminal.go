@@ -40,6 +40,18 @@ type Terminal interface {
 
 	// Size returns the current grid size in rows and columns.
 	Size() (rows, cols int)
+
+	// Replies returns, and clears, the terminal's replies to queries in
+	// the output written to it so far, such as cursor position reports
+	// and device attributes. Programs send those queries to learn about
+	// their terminal and often wait for the answers, so the replies
+	// belong on the PTY's input. Every reply caused by a Write or Resize
+	// is available once it returns.
+	Replies() []byte
+
+	// Close releases the terminal's resources. Afterwards the screen can
+	// still be read, but Write fails.
+	Close() error
 }
 
 // Screen is a full snapshot of the canonical terminal state at a point in time.
@@ -182,23 +194,45 @@ const (
 
 // Modes describes terminal modes that change how a client should interpret
 // input or render the screen.
+//
+// Several of them are requests by the program for particular input, such
+// as mouse events, which only the client's own terminal can produce. A
+// client mirrors those onto its terminal.
 type Modes struct {
 	AltScreen         bool      `cbor:"a,omitempty"`
 	CursorVisible     bool      `cbor:"v,omitempty"`
-	BracketedPaste    bool      `cbor:"p,omitempty"`
-	ApplicationCursor bool      `cbor:"k,omitempty"`
-	Mouse             MouseMode `cbor:"m,omitempty"`
+	BracketedPaste    bool      `cbor:"p,omitempty"`  // 2004: mark pastes
+	ApplicationCursor bool      `cbor:"k,omitempty"`  // 1 (DECCKM): cursor keys send SS3 sequences
+	Mouse             MouseMode `cbor:"m,omitempty"`  // which mouse events to report
+	MouseSGR          bool      `cbor:"ms,omitempty"` // 1006: report mouse events in SGR encoding
+	FocusEvents       bool      `cbor:"f,omitempty"`  // 1004: report focus in and out
 }
 
-// MouseMode enumerates the mouse reporting modes a terminal may request.
-// MouseOff is the zero value and means no mouse reporting.
+// MouseMode enumerates the mouse tracking modes a terminal may request,
+// each a DEC private mode. MouseOff is the zero value and means no mouse
+// reporting. How events are encoded is separate; see Modes.MouseSGR.
 type MouseMode uint8
 
 const (
-	MouseOff MouseMode = iota
-	MouseX10
-	MouseNormal
-	MouseButton
-	MouseAny
-	MouseSGR
+	MouseOff    MouseMode = iota
+	MouseX10              // 9: button presses
+	MouseNormal           // 1000: presses and releases
+	MouseButton           // 1002: and motion while a button is down
+	MouseAny              // 1003: and all motion
 )
+
+// DECMode returns the DEC private mode number that enables m, or 0 for
+// MouseOff.
+func (m MouseMode) DECMode() int {
+	switch m {
+	case MouseX10:
+		return 9
+	case MouseNormal:
+		return 1000
+	case MouseButton:
+		return 1002
+	case MouseAny:
+		return 1003
+	}
+	return 0
+}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bradfitz/tsterm/pkg/proto"
 )
@@ -67,16 +68,19 @@ func formatList(sessions []proto.SessionSummary) string {
 	}
 	var b strings.Builder
 	for _, s := range sessions {
-		state := "active"
-		if !s.Active {
-			state = "ended"
-		}
 		name := s.Name
 		if name == "" {
 			name = "-"
 		}
-		fmt.Fprintf(&b, "%-30s %-12s %dx%d %s watchers=%d\n",
-			s.ID, name, s.Rows, s.Cols, state, s.Watchers)
+		state := "ended"
+		if s.Active {
+			state = "active never"
+			if !s.LastActivity.IsZero() {
+				state = "active " + time.Since(s.LastActivity).Round(time.Second).String() + " ago"
+			}
+		}
+		fmt.Fprintf(&b, "%-30s %-12s %-8s %-20s watchers=%d\n",
+			s.ID, name, fmt.Sprintf("%dx%d", s.Cols, s.Rows), state, s.Watchers)
 	}
 	return b.String()
 }

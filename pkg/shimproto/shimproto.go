@@ -74,6 +74,16 @@ type Info struct {
 	Exited     bool      `json:"exited,omitzero"`
 	ExitStatus string    `json:"exitStatus,omitzero"`
 
+	// LastInput and LastOutput are when the shim last wrote input to the
+	// PTY and last read output from it, or zero if never.
+	LastInput  time.Time `json:"lastInput,omitzero"`
+	LastOutput time.Time `json:"lastOutput,omitzero"`
+
+	// OutputEnd is the offset at which the output stream currently ends.
+	// A controller that attaches next is replayed output up to here that
+	// was produced before it attached.
+	OutputEnd uint64 `json:"outputEnd,omitzero"`
+
 	// Meta is opaque to the shim. tstermd stores its own per-session
 	// state here (name, capability token, and so on) so that a restarted
 	// tstermd can recover it.

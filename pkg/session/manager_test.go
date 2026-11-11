@@ -218,3 +218,59 @@ func TestRestoreReleasesExited(t *testing.T) {
 		t.Error("exited session was restored")
 	}
 }
+
+func TestActivityTimes(t *testing.T) {
+	m, l := newTestManager(t)
+	start := time.Now()
+	s, err := m.Create(makeCfg("stty -echo; echo ready; cat >/dev/null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitScreen(t, s, "ready")
+	if !s.LastInput().IsZero() || !s.LastAttach().IsZero() {
+		t.Errorf("LastInput %v, LastAttach %v; want zero", s.LastInput(), s.LastAttach())
+	}
+	if s.LastOutput().Before(start) {
+		t.Errorf("LastOutput = %v, want after %v", s.LastOutput(), start)
+	}
+	s.WriteInput([]byte("typed\n"))
+	if err := s.MarkAttached(); err != nil {
+		t.Fatal(err)
+	}
+	in, out, att := s.LastInput(), s.LastOutput(), s.LastAttach()
+	if in.IsZero() || att.IsZero() || !in.After(out) {
+		t.Errorf("after input and attach: in %v, out %v, attach %v", in, out, att)
+	}
+
+	// After a tstermd restart the times come back from the shim. Replaying
+	// the old output must not count as new output.
+	m.Detach()
+	time.Sleep(100 * time.Millisecond)
+	m2 := NewManager(m.dir, l)
+	t.Cleanup(func() { m2.Close() })
+	if _, err := m2.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s2 := m2.Get(s.ID())
+	waitScreen(t, s2, "ready")
+	time.Sleep(100 * time.Millisecond)
+	near := func(a, b time.Time) bool { d := a.Sub(b); return d < 50*time.Millisecond && d > -50*time.Millisecond }
+	if !near(s2.LastOutput(), out) || !near(s2.LastInput(), in) || !s2.LastAttach().Equal(att) {
+		t.Errorf("restored times: in %v (want ~%v), out %v (want ~%v), attach %v (want %v)",
+			s2.LastInput(), in, s2.LastOutput(), out, s2.LastAttach(), att)
+	}
+}
+
+func TestTermIsTheEmulators(t *testing.T) {
+	m, _ := newTestManager(t)
+	cfg := makeCfg(`echo "term=$TERM"`)
+	cfg.PTY.Env = []string{"TERM=xterm-ghostty", "LANG=C.UTF-8"}
+	s, err := m.Create(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitScreen(t, s, "term="+Term)
+	if strings.Contains(screenText(s), "ghostty") {
+		t.Errorf("client TERM leaked into the session:\n%s", screenText(s))
+	}
+}

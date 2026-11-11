@@ -197,6 +197,10 @@ type attachState struct {
 
 	esc escaper // used only by writeLoop
 
+	// badUpdate, if non-empty, describes why the latest screen update
+	// could not be used. It stays on the status line until one can.
+	badUpdate string
+
 	exitErr error
 	closed  bool
 }
@@ -249,7 +253,7 @@ func (s *attachState) onContactLocked(now time.Time) {
 	s.lostSince = time.Time{}
 	s.dropped = 0
 	s.probing = false
-	s.renderer.SetStatus("")
+	s.renderer.SetStatus(s.badUpdate)
 	if s.trying {
 		// Retry anything still pending promptly, with a fresh budget.
 		s.tryStart = now
@@ -271,7 +275,13 @@ func (s *attachState) handleStateLocked(f *proto.State) {
 		return
 	}
 	d, ok, err := s.reasm.Add(f)
-	if err != nil || !ok {
+	if err != nil {
+		// Show it: otherwise the screen just stops updating.
+		s.badUpdate = fmt.Sprintf("tsterm: can't use screen update from server: %v", err)
+		s.renderer.SetStatus(s.badUpdate)
+		return
+	}
+	if !ok {
 		return
 	}
 	if f.From != 0 && f.From != s.cur {
@@ -281,6 +291,8 @@ func (s *attachState) handleStateLocked(f *proto.State) {
 		return
 	}
 	s.renderer.Apply(proto.Delta{D: d})
+	s.badUpdate = ""
+	s.renderer.SetStatus("")
 	s.cur = f.To
 	s.reasm.Forget(s.cur)
 	s.sendStateAckLocked()

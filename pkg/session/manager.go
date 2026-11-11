@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -86,7 +88,7 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 		Socket:  sock,
 		Command: cfg.PTY.Command,
 		Args:    cfg.PTY.Args,
-		Env:     cfg.PTY.Env,
+		Env:     withTerm(cfg.PTY.Env),
 		Dir:     cfg.PTY.Dir,
 		Rows:    rows,
 		Cols:    cols,
@@ -99,7 +101,7 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: connecting to new shim: %w", err)
 	}
-	s, err := attach(conn, id, md)
+	s, err := attach(conn, id, md, false)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -109,6 +111,20 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// Term is the TERM of every session. Programs in a session write to
+// tstermd's terminal emulator, not to the client's terminal, which only
+// redraws the emulator's screen; so TERM describes the emulator, whatever
+// terminal the client runs in.
+const Term = "xterm-256color"
+
+// withTerm returns env with any TERM replaced by Term.
+func withTerm(env []string) []string {
+	out := slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		return strings.HasPrefix(kv, "TERM=")
+	})
+	return append(out, "TERM="+Term)
 }
 
 func (m *Manager) register(s *Session) error {
@@ -170,7 +186,7 @@ func (m *Manager) restore(ctx context.Context, sock string) error {
 		conn.Close()
 		return fmt.Errorf("bad metadata: %w", err)
 	}
-	s, err := attach(conn, ID(conn.Info.ID), md)
+	s, err := attach(conn, ID(conn.Info.ID), md, true)
 	if err != nil {
 		conn.Close()
 		return err
@@ -250,6 +266,18 @@ type Summary struct {
 	Created  time.Time
 	Active   bool
 	Watchers int
+
+	LastInput  time.Time // keyboard input sent to the child
+	LastOutput time.Time // output from the child, changing the screen
+	LastAttach time.Time // a client attached to look at the session
+}
+
+// LastActivity returns the later of LastInput and LastOutput.
+func (s Summary) LastActivity() time.Time {
+	if s.LastInput.After(s.LastOutput) {
+		return s.LastInput
+	}
+	return s.LastOutput
 }
 
 // List returns the current set of sessions, sorted by creation time.
@@ -268,6 +296,10 @@ func (m *Manager) List() []Summary {
 			Created:  s.Created(),
 			Active:   s.Active(),
 			Watchers: s.WatchersCount(),
+
+			LastInput:  s.LastInput(),
+			LastOutput: s.LastOutput(),
+			LastAttach: s.LastAttach(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })

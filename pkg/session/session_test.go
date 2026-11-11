@@ -282,3 +282,24 @@ func screenTextFromDiff(d vt.ScreenDelta) string {
 	}
 	return b.String()
 }
+
+func TestTerminalQueriesAnswered(t *testing.T) {
+	// The program asks for device attributes and its cursor position, as
+	// TUIs like Claude Code do at startup, and waits for the answers.
+	// Before tstermd answered, the first query wedged the session.
+	s := startEcho(t, `stty raw -echo; printf 'q\033[c\033[6n'
+		r=; while c=$(dd bs=1 count=1 2>/dev/null); do r="$r$c"; [ "$c" = R ] && break; done
+		stty sane; echo; echo "got:$(printf %s "$r" | od -An -c | tr -s ' ' | tr -d '\n')"; sleep 5`)
+	defer s.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(screenText(s), "got:") {
+		if time.Now().After(deadline) {
+			t.Fatalf("program never got its replies; screen:\n%s", screenText(s))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Device attributes, then the cursor after "q": row 1, column 2.
+	if got := screenText(s); !strings.Contains(got, "033 [ ?") || !strings.Contains(got, "033 [ 1 ; 2 R") {
+		t.Errorf("replies not as expected; screen:\n%s", got)
+	}
+}

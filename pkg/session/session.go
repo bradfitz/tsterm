@@ -70,6 +70,10 @@ type meta struct {
 	// Clients are the hot-path clients attached to the session, so that
 	// a restarted tstermd can bring them up to date unprompted.
 	Clients []Client `json:"clients,omitzero"`
+
+	// LastAttach is when a client last attached to the session to look
+	// at it. The shim keeps it, in memory, on tstermd's behalf.
+	LastAttach time.Time `json:"lastAttach,omitzero"`
 }
 
 // Client identifies a hot-path client attached to a session.
@@ -100,7 +104,14 @@ type Session struct {
 
 	metaMu sync.Mutex
 	meta   meta // as stored in the shim
-	term   vt.Terminal
+
+	// Activity times. The shim tracks input and output too, so that they
+	// survive a tstermd restart; these start from its values.
+	activityMu sync.Mutex
+	lastInput  time.Time
+	lastOutput time.Time
+	replayEnd  uint64 // output up to this offset predates attaching
+	term       vt.Terminal
 
 	done chan struct{}
 
@@ -128,8 +139,11 @@ type Session struct {
 }
 
 // attach makes conn the shim's controller and starts a Session for it,
-// restoring the terminal state from the shim's latest checkpoint.
-func attach(conn *shim.Conn, id ID, m meta) (*Session, error) {
+// restoring the terminal state from the shim's latest checkpoint. restored
+// says whether the shim had a previous controller, a previous tstermd, in
+// which case output already produced was seen, and its queries answered,
+// by that tstermd.
+func attach(conn *shim.Conn, id ID, m meta, restored bool) (*Session, error) {
 	ckpt, err := conn.Attach()
 	if err != nil {
 		return nil, err
@@ -138,22 +152,37 @@ func attach(conn *shim.Conn, id ID, m meta) (*Session, error) {
 	if _, err := term.Write(ckpt.Blob); err != nil {
 		return nil, err
 	}
+	term.Replies() // a checkpoint asks nothing, but be sure
 	s := &Session{
-		id:       id,
-		name:     m.Name,
-		token:    m.Token,
-		created:  m.Created,
-		conn:     conn,
-		meta:     m,
-		term:     term,
-		done:     make(chan struct{}),
-		watchers: map[uint64]*Watcher{},
-		ckptTime: time.Now(),
+		id:         id,
+		name:       m.Name,
+		token:      m.Token,
+		created:    m.Created,
+		conn:       conn,
+		meta:       m,
+		lastInput:  conn.Info.LastInput,
+		lastOutput: conn.Info.LastOutput,
+		replayEnd:  replayEnd(conn, restored),
+		term:       term,
+		done:       make(chan struct{}),
+		watchers:   map[uint64]*Watcher{},
+		ckptTime:   time.Now(),
 	}
 	s.offset.Store(ckpt.Offset)
 	s.ckptOffset.Store(ckpt.Offset)
 	go s.pump()
 	return s, nil
+}
+
+// replayEnd returns the output offset up to which attaching replays output
+// that a previous controller already handled.
+func replayEnd(conn *shim.Conn, restored bool) uint64 {
+	if !restored {
+		// A new session's early output, produced before we attached,
+		// is ours to handle.
+		return 0
+	}
+	return conn.Info.OutputEnd
 }
 
 func encodeMeta(m meta) []byte {
@@ -208,6 +237,38 @@ func (s *Session) UpdateClients(update func([]Client) []Client) error {
 	return s.conn.SetMeta(encodeMeta(s.meta))
 }
 
+// MarkAttached records that a client attached to the session to look at
+// it, for LastAttach.
+func (s *Session) MarkAttached() error {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	s.meta.LastAttach = time.Now()
+	return s.conn.SetMeta(encodeMeta(s.meta))
+}
+
+// LastAttach returns when a client last attached, or the zero time.
+func (s *Session) LastAttach() time.Time {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	return s.meta.LastAttach
+}
+
+// LastInput returns when keyboard input was last sent to the child, or the
+// zero time.
+func (s *Session) LastInput() time.Time {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	return s.lastInput
+}
+
+// LastOutput returns when the child last produced output, which is when
+// the screen last changed, or the zero time.
+func (s *Session) LastOutput() time.Time {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	return s.lastOutput
+}
+
 // Pid returns the child's process ID.
 func (s *Session) Pid() int { return s.conn.Info.Pid }
 
@@ -236,6 +297,9 @@ func (s *Session) WriteInput(b []byte) (int, error) {
 	if err := s.conn.Input(b); err != nil {
 		return 0, err
 	}
+	s.activityMu.Lock()
+	s.lastInput = time.Now()
+	s.activityMu.Unlock()
 	return len(b), nil
 }
 
@@ -246,6 +310,9 @@ func (s *Session) Resize(rows, cols int) error {
 		return err
 	}
 	s.term.Resize(rows, cols)
+	if r := s.term.Replies(); len(r) > 0 {
+		_ = s.conn.Input(r) // the size, in in-band resize mode
+	}
 	s.notifyWatchers()
 	return nil
 }
@@ -292,6 +359,7 @@ func (s *Session) Close() error {
 func (s *Session) Detach() {
 	s.detached.Store(true)
 	s.conn.Close()
+	s.term.Close()
 }
 
 // pump runs in a dedicated goroutine. It copies output from the shim into
@@ -319,7 +387,21 @@ func (s *Session) pump() {
 		}
 		_, _ = s.term.Write(out)
 		s.notifyWatchers()
-		s.offset.Add(uint64(len(out)))
+		replies := s.term.Replies()
+		if offset := s.offset.Add(uint64(len(out))); offset > s.replayEnd {
+			// New output, not a replay of output from before we
+			// attached, whose time the shim already reported.
+			s.activityMu.Lock()
+			s.lastOutput = time.Now()
+			s.activityMu.Unlock()
+			// Answer the program's queries, such as cursor position
+			// reports. Queries in replayed output were answered by
+			// the tstermd that first saw them; answering them again
+			// would feed stale replies to the program as input.
+			if len(replies) > 0 {
+				_ = s.conn.Input(replies)
+			}
+		}
 		s.scan.Write(out)
 		s.maybeCheckpoint()
 	}
@@ -351,6 +433,7 @@ func (s *Session) shutdown(waitErr error) {
 		return
 	}
 	s.waitErr = waitErr
+	s.term.Close()
 	close(s.done)
 
 	s.mu.Lock()

@@ -63,17 +63,14 @@ func (s Screen) Repaint() []byte {
 	if s.Modes.BracketedPaste {
 		sb.WriteString("\x1b[?2004h")
 	}
-	switch s.Modes.Mouse {
-	case MouseX10:
-		sb.WriteString("\x1b[?9h")
-	case MouseNormal:
-		sb.WriteString("\x1b[?1000h")
-	case MouseButton:
-		sb.WriteString("\x1b[?1002h")
-	case MouseAny:
-		sb.WriteString("\x1b[?1003h")
-	case MouseSGR:
+	if m := s.Modes.Mouse.DECMode(); m != 0 {
+		fmt.Fprintf(&sb, "\x1b[?%dh", m)
+	}
+	if s.Modes.MouseSGR {
 		sb.WriteString("\x1b[?1006h")
+	}
+	if s.Modes.FocusEvents {
+		sb.WriteString("\x1b[?1004h")
 	}
 
 	// DECSCUSR numbers each shape's blinking variant first.
