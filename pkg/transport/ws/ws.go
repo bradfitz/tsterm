@@ -175,7 +175,7 @@ func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.S
 				return writeEnv(ctx, conn, proto.Envelope{Ended: &proto.Ended{Status: "closed"}})
 			}
 			d := w.Diff()
-			if d.Resized || len(d.Regions) > 0 || d.CursorMoved || d.TitleSet || d.ModesChanged {
+			if d.Changed() {
 				if err := writeEnv(ctx, conn, proto.Envelope{Delta: &proto.Delta{D: d}}); err != nil {
 					return err
 				}

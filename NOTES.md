@@ -95,8 +95,11 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   `pkg/session/demoapp_test.go`.
 - **Desktop notifications** (OSC 9 and 777) travel in the screen state, like
   the bell. The CLI passes them to the local terminal (control characters
-  stripped); the web viewer shows them with the browser's Notification API
-  while the page is in the background, once the user allows it.
+  stripped). The web viewer shows them as toasts while the page is in
+  front, and with the browser's Notification API otherwise (once allowed;
+  needs HTTPS). Being state, notifications sent within one screen update
+  coalesce to the last. The viewer's bell beeps (Web Audio, unlocked by the
+  first key press or click) and flashes the screen.
 - **Performance.** Writes: 132 MB/s (charm: 15). Snapshot of 200×60:
   1.4 ms (charm: 0.7); fix by snapshotting only dirty rows (the render state
   tracks them). Each terminal: ~2 MB of wasm memory at start (1 MB is the

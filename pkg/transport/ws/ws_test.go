@@ -201,3 +201,29 @@ func TestWritableViewer(t *testing.T) {
 		t.Errorf("size = %dx%d after a bad resize", c, r)
 	}
 }
+
+// TestBellAndNotificationAlone checks that a bell and a notification reach
+// viewers even when nothing on the screen changes with them.
+func TestBellAndNotificationAlone(t *testing.T) {
+	srv, hts := mountTestServer(t)
+	sess, err := srv.Manager.Create(session.Config{PTY: pty.Config{
+		Command: "/bin/sh",
+		Args:    []string{"-c", `sleep 0.5; printf '\a'; sleep 0.5; printf '\033]9;hi\007'; sleep 5`},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, ctx, cancel := dialWS(t, "ws://"+hts.Listener.Addr().String()+"/v1/sessions/"+string(sess.ID())+"/ws")
+	defer cancel()
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	conn.SetReadLimit(1 << 20)
+	readEnv(t, conn, ctx) // the snapshot
+	var rang, notified bool
+	for !rang || !notified {
+		env := readEnv(t, conn, ctx)
+		if d := env.Delta; d != nil {
+			rang = rang || d.D.Rang
+			notified = notified || (d.D.NotificationSet && d.D.Notification.Body == "hi")
+		}
+	}
+}

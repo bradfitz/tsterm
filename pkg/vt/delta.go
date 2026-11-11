@@ -27,6 +27,7 @@ func Diff(prev, cur Screen) ScreenDelta {
 	if d.NotificationSet = first || prev.Notification != cur.Notification; d.NotificationSet {
 		d.Notification = cur.Notification
 	}
+	d.Rang = !first && cur.BellSeq != prev.BellSeq
 	d.Regions = diffRows(prev.Cells, cur.Cells, cur.Cols)
 	return d
 }
@@ -88,12 +89,19 @@ type ScreenDelta struct {
 	TitleSet bool   `cbor:"ts,omitempty"`
 
 	BellSeq uint64 `cbor:"b,omitempty"`
+	Rang    bool   `cbor:"br,omitempty"` // BellSeq changed
 
 	Modes        Modes `cbor:"m"`
 	ModesChanged bool  `cbor:"mc,omitempty"`
 
 	Notification    Notification `cbor:"n,omitempty"`
 	NotificationSet bool         `cbor:"ns,omitempty"`
+}
+
+// Changed reports whether d describes any change at all.
+func (d ScreenDelta) Changed() bool {
+	return d.Resized || len(d.Regions) > 0 || d.CursorMoved || d.TitleSet ||
+		d.ModesChanged || d.NotificationSet || d.Rang
 }
 
 // CellRun is a horizontal span of cells starting at (Row, Col) and continuing

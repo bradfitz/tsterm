@@ -16,7 +16,14 @@ function decodeCBOR(buf) {
       case 24: return view.getUint8(pos++);
       case 25: pos += 2; return view.getUint16(pos - 2);
       case 26: pos += 4; return view.getUint32(pos - 4);
-      case 27: pos += 8; return Number(view.getBigUint64(pos - 8));
+      case 27: {
+        // Sequence numbers (the bell's, notifications') exceed 2^53, so
+        // keep large values exact as BigInts, which compare correctly
+        // with Numbers.
+        pos += 8;
+        const v = view.getBigUint64(pos - 8);
+        return v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v;
+      }
     }
     throw new Error("unsupported CBOR length " + ai);
   }
@@ -132,8 +139,9 @@ function rerenderRow(y) {
 
 function applySnapshot(s) {
   setSize(s.r || 0, s.c || 0);
-  // A notification from before this snapshot is old news.
+  // A notification or bell from before this snapshot is old news.
   lastNotification = (s.n && s.n.s) || 0;
+  lastBell = s.b || 0;
   rows = s.x || [];
   cursor = s.cur || null;
   modes = s.m || {};
@@ -158,6 +166,10 @@ function applyDelta(d) {
     lastNotification = d.n.s;
     // A full screen, as on connecting, only brings us up to date.
     if (!d.rz) showNotification(d.n);
+  }
+  if ((d.b || 0) > lastBell) {
+    lastBell = d.b;
+    if (!d.rz) ringBell();
   }
   const old = cursor;
   cursor = d.cur || cursor;
@@ -470,17 +482,64 @@ modeEl.addEventListener("click", () => {
 });
 showMode();
 
-// Desktop notifications, which programs ask for with OSC 9 or OSC 777,
-// shown while this page isn't in front, once the user allows them.
+// The bell: a short beep and a flash of the screen. Browsers let a page
+// play sound only after the user interacts with it, so the audio context is
+// created on the first key press or click.
+let lastBell = 0;
+let audio = null;
+function unlockAudio() {
+  if (!audio && window.AudioContext) audio = new AudioContext();
+  if (audio && audio.state === "suspended") audio.resume();
+}
+document.addEventListener("keydown", unlockAudio, {capture: true});
+document.addEventListener("mousedown", unlockAudio, {capture: true});
+
+function ringBell() {
+  screenEl.classList.remove("bell");
+  void screenEl.offsetWidth; // restart the animation
+  screenEl.classList.add("bell");
+  if (!audio || audio.state !== "running") return;
+  const osc = audio.createOscillator();
+  const gain = audio.createGain();
+  osc.frequency.value = 880;
+  gain.gain.setValueAtTime(0.15, audio.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.15);
+  osc.connect(gain).connect(audio.destination);
+  osc.start();
+  osc.stop(audio.currentTime + 0.15);
+}
+
+// Notifications, which programs ask for with OSC 9 or OSC 777. While the
+// page is in front, they're shown in it, as toasts; otherwise, as desktop
+// notifications, once the user allows those.
 let lastNotification = 0;
 const notifyEl = document.getElementById("notify");
 
+const toastsEl = document.getElementById("toasts");
+
 function showNotification(n) {
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
-  if (document.hasFocus() && !document.hidden) return;
   const label = nameEl.textContent || sessionID;
+  if (document.hasFocus() && !document.hidden) {
+    showToast(n.t || label, n.b || "");
+    return;
+  }
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
   const note = new Notification(n.t || label, {body: n.b || "", tag: `tsterm-${sessionID}`});
   note.onclick = () => { window.focus(); note.close(); };
+}
+
+function showToast(title, body) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  const t = document.createElement("b");
+  t.textContent = title;
+  const b = document.createElement("div");
+  b.textContent = body;
+  el.append(t, b);
+  const dismiss = () => el.remove();
+  el.addEventListener("click", dismiss);
+  toastsEl.append(el);
+  setTimeout(dismiss, 8000);
 }
 
 function showNotifyButton() {
