@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,5 +127,77 @@ func TestViewerNotFound(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// screenHas waits up to d for sess's screen to show want.
+func screenHas(sess *session.Session, want string, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		for _, row := range sess.Snapshot().Cells {
+			var line string
+			for _, c := range row {
+				line += c.Grapheme
+			}
+			if strings.Contains(line, want) {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestWritableViewer(t *testing.T) {
+	srv, hts := mountTestServer(t)
+	sess, err := srv.Manager.Create(session.Config{PTY: pty.Config{Command: "/bin/cat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "ws://" + hts.Listener.Addr().String() + "/v1/sessions/" + string(sess.ID()) + "/ws"
+
+	// A view-only connection's input is ignored.
+	ro, ctx, cancel := dialWS(t, base)
+	defer cancel()
+	readEnv(t, ro, ctx)
+	ro.Write(ctx, websocket.MessageText, []byte(`{"input":"ignored"}`))
+	ro.Close(websocket.StatusNormalClosure, "")
+
+	rw, ctx, cancel := dialWS(t, base+"?write=1")
+	defer cancel()
+	defer rw.Close(websocket.StatusNormalClosure, "")
+	readEnv(t, rw, ctx)
+	if err := rw.Write(ctx, websocket.MessageText, []byte(`{"input":"typed"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !screenHas(sess, "typed", 3*time.Second) {
+		t.Fatal("input from a writable viewer did not reach the session")
+	}
+	// The ignored input was sent first, so it would be on screen by now.
+	if screenHas(sess, "ignored", 0) {
+		t.Error("input from a view-only viewer reached the session")
+	}
+
+	if err := rw.Write(ctx, websocket.MessageText, []byte(`{"resize":{"rows":30,"cols":100}}`)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if r, c := sess.Size(); r == 30 && c == 100 {
+			break
+		}
+		if time.Now().After(deadline) {
+			r, c := sess.Size()
+			t.Fatalf("size = %dx%d after resize, want 100x30", c, r)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Absurd sizes are refused.
+	rw.Write(ctx, websocket.MessageText, []byte(`{"resize":{"rows":0,"cols":100000}}`))
+	time.Sleep(100 * time.Millisecond)
+	if r, c := sess.Size(); r != 30 || c != 100 {
+		t.Errorf("size = %dx%d after a bad resize", c, r)
 	}
 }

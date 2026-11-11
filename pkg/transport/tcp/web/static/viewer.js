@@ -1,6 +1,8 @@
-// tsterm read-only session viewer. It connects to the session's WebSocket
-// stream, which sends a CBOR Snapshot and then Deltas (see pkg/proto and
-// pkg/vt for the field names), and renders the screen.
+// tsterm session viewer. It connects to the session's WebSocket stream,
+// which sends a CBOR Snapshot and then Deltas (see pkg/proto and pkg/vt for
+// the field names), and renders the screen. Unless it is view-only, it also
+// sends what the user types, and, in size-owning mode, resizes the session
+// to fit the browser window.
 "use strict";
 
 // decodeCBOR decodes one CBOR item: the subset the server's encoder emits.
@@ -73,8 +75,10 @@ const screenEl = document.getElementById("screen");
 const statusEl = document.getElementById("status");
 const sessionID = screenEl.dataset.id;
 
-// The screen being displayed: its size, rows of cells, and the cursor.
-let numRows = 0, numCols = 0, rows = [], cursor = null;
+// The screen being displayed: its size, rows of cells, the cursor, and the
+// terminal modes (a vt.Modes: k is application cursor keys, p bracketed
+// paste, f focus events).
+let numRows = 0, numCols = 0, rows = [], cursor = null, modes = {};
 
 // setSize sizes the screen element to exactly the terminal, so that the
 // out-of-bounds pattern shows around it.
@@ -130,6 +134,7 @@ function applySnapshot(s) {
   setSize(s.r || 0, s.c || 0);
   rows = s.x || [];
   cursor = s.cur || null;
+  modes = s.m || {};
   if (s.t) document.title = s.t;
   renderAll();
 }
@@ -146,6 +151,7 @@ function applyDelta(d) {
     (run.x || []).forEach((cell, i) => { row[run.c + i] = cell; });
     touched.add(run.r);
   }
+  if (d.mc) modes = d.m || {};
   const old = cursor;
   cursor = d.cur || cursor;
   if (old) touched.add(old.r);
@@ -154,25 +160,198 @@ function applyDelta(d) {
   if (d.rz) renderAll(); else touched.forEach(rerenderRow);
 }
 
+// Options, from the URL: ?ro for view-only, ?fit to start owning the size.
+const params = new URLSearchParams(location.search);
+let writable = !params.has("ro");
+let sizeOwner = params.has("fit");
+
+let ws = null;
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/v1/sessions/${encodeURIComponent(sessionID)}/ws`);
-  ws.binaryType = "arraybuffer";
-  ws.onopen = () => { statusEl.textContent = "live (read-only)"; };
-  ws.onmessage = (ev) => {
+  const q = writable ? "?write=1" : "";
+  const sock = ws = new WebSocket(`${proto}//${location.host}/v1/sessions/${encodeURIComponent(sessionID)}/ws${q}`);
+  sock.binaryType = "arraybuffer";
+  sock.onopen = () => {
+    showStatus();
+    if (sizeOwner) fit();
+  };
+  sock.onmessage = (ev) => {
     const env = decodeCBOR(ev.data);
     if (env[6]) applySnapshot(env[6]["s_"]);
     else if (env[5]) applyDelta(env[5].d);
-    else if (env[7]) { statusEl.textContent = "session ended"; ws.onclose = null; }
+    else if (env[7]) { statusEl.textContent = "session ended"; sock.onclose = null; ws = null; }
   };
-  ws.onclose = () => {
+  sock.onclose = () => {
+    if (ws !== sock) return; // replaced by a reconnect
+    ws = null;
     statusEl.textContent = "disconnected; retrying…";
     setTimeout(connect, 2000);
   };
 }
+
+function showStatus() {
+  if (!ws) return;
+  statusEl.textContent = !writable ? "view-only" : sizeOwner ? "live, sizing to window" : "live";
+}
+
+// reconnect reopens the stream, as after switching between view-only and
+// writable, which the server decides per connection.
+function reconnect() {
+  const old = ws;
+  ws = null;
+  if (old) { old.onclose = null; old.close(); }
+  connect();
+}
+
+function send(msg) {
+  if (writable && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
 connect();
 
-// The tab bar: the most recently active sessions, refreshed periodically.
+// Typing. keyBytes translates a key press into what a terminal sends for
+// it, following xterm: modifiers on special keys as CSI 1;M sequences,
+// Ctrl+letter as a control character, Alt as an ESC prefix. Keys with the
+// Meta (Cmd) key are left to the browser, for copy and paste.
+function keyBytes(ev) {
+  if (ev.isComposing || ev.metaKey) return null;
+  const k = ev.key;
+  const mod = (ev.shiftKey ? 1 : 0) | (ev.altKey ? 2 : 0) | (ev.ctrlKey ? 4 : 0);
+  // cursor returns a cursor-style key: SS3 in application cursor mode.
+  const cursorKey = (final) =>
+    mod ? `\x1b[1;${mod + 1}${final}` : (modes.k ? `\x1bO${final}` : `\x1b[${final}`);
+  const tilde = (n) => mod ? `\x1b[${n};${mod + 1}~` : `\x1b[${n}~`;
+  const fkey = (final) => mod ? `\x1b[1;${mod + 1}${final}` : `\x1bO${final}`;
+  switch (k) {
+    case "Enter": return ev.altKey ? "\x1b\r" : "\r";
+    case "Backspace": return ev.ctrlKey ? "\x08" : ev.altKey ? "\x1b\x7f" : "\x7f";
+    case "Tab": return ev.shiftKey ? "\x1b[Z" : "\t";
+    case "Escape": return "\x1b";
+    case "ArrowUp": return cursorKey("A");
+    case "ArrowDown": return cursorKey("B");
+    case "ArrowRight": return cursorKey("C");
+    case "ArrowLeft": return cursorKey("D");
+    case "Home": return cursorKey("H");
+    case "End": return cursorKey("F");
+    case "Insert": return tilde(2);
+    case "Delete": return tilde(3);
+    case "PageUp": return tilde(5);
+    case "PageDown": return tilde(6);
+    case "F1": return fkey("P");
+    case "F2": return fkey("Q");
+    case "F3": return fkey("R");
+    case "F4": return fkey("S");
+  }
+  const fn = {F5: 15, F6: 17, F7: 18, F8: 19, F9: 20, F10: 21, F11: 23, F12: 24}[k];
+  if (fn) return tilde(fn);
+  if ([...k].length !== 1) return null; // Shift, Control, and other non-characters
+  if (ev.ctrlKey && !ev.altKey) {
+    const c = k.toUpperCase().charCodeAt(0);
+    if (c >= 0x40 && c <= 0x5f) return String.fromCharCode(c - 0x40); // Ctrl-A is 1, and so on
+    const special = {" ": "\x00", "2": "\x00", "3": "\x1b", "4": "\x1c", "5": "\x1d", "6": "\x1e", "7": "\x1f", "8": "\x7f", "/": "\x1f", "?": "\x7f"}[k];
+    return special ?? null;
+  }
+  // Alt plus an ASCII key is ESC-prefixed. On a Mac, Option makes other
+  // characters instead, such as "∂", which are typed as they are.
+  if (ev.altKey && k.charCodeAt(0) < 0x80) return "\x1b" + k;
+  return k;
+}
+
+// Typing goes to the session wherever the page's focus is, except in text
+// fields (such as for renaming).
+const inTextField = (el) => el instanceof Element && el.closest("input, textarea, select");
+
+document.addEventListener("keydown", (ev) => {
+  if (!writable || inTextField(ev.target)) return;
+  const b = keyBytes(ev);
+  if (b == null) return;
+  ev.preventDefault();
+  send({input: b});
+});
+
+document.addEventListener("paste", (ev) => {
+  if (!writable || inTextField(ev.target)) return;
+  let text = ev.clipboardData.getData("text/plain");
+  if (!text) return;
+  ev.preventDefault();
+  text = text.replace(/\r?\n/g, "\r"); // Enter, as typed
+  if (modes.p) text = "\x1b[200~" + text + "\x1b[201~"; // bracketed paste
+  send({input: text});
+});
+
+// Focus reports, for programs that asked for them.
+window.addEventListener("focus", () => { if (modes.f) send({input: "\x1b[I"}); });
+window.addEventListener("blur", () => { if (modes.f) send({input: "\x1b[O"}); });
+
+// Buttons must not take the focus: a focused button would turn a typed
+// Enter or space into a click.
+for (const b of document.querySelectorAll("header button, #sizehandle")) {
+  b.addEventListener("mousedown", (ev) => ev.preventDefault());
+}
+
+// Size-owning mode: the session is resized to fill the browser window,
+// whenever the window changes size. The handle at the terminal's corner
+// turns it on and off.
+const handleEl = document.getElementById("sizehandle");
+
+// cellSize measures a character cell of the terminal's font.
+function cellSize() {
+  const probe = document.createElement("span");
+  probe.textContent = "M".repeat(100);
+  probe.style.visibility = "hidden";
+  screenEl.parentElement.appendChild(probe);
+  const w = probe.getBoundingClientRect().width / 100;
+  probe.remove();
+  const h = parseFloat(getComputedStyle(screenEl).lineHeight);
+  return [w, h];
+}
+
+function fit() {
+  const [cw, ch] = cellSize();
+  const area = document.querySelector("main");
+  // Leave a margin for the handle, so it stays in view.
+  const cols = Math.max(10, Math.floor(area.clientWidth / cw) - 3);
+  const rows = Math.max(3, Math.floor(area.clientHeight / ch) - 2);
+  if (rows !== numRows || cols !== numCols) send({resize: {rows, cols}});
+}
+
+function setSizeOwner(on) {
+  sizeOwner = on;
+  handleEl.classList.toggle("on", on);
+  handleEl.title = on
+    ? "Sizing the session to this window. Click to stop."
+    : "Click to size the session to this window.";
+  showStatus();
+  if (on) fit();
+}
+handleEl.addEventListener("click", () => setSizeOwner(!sizeOwner));
+setSizeOwner(sizeOwner);
+
+let fitTimer;
+window.addEventListener("resize", () => {
+  if (!sizeOwner) return;
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(fit, 100);
+});
+
+// The view-only switch.
+const modeEl = document.getElementById("mode");
+function showMode() {
+  modeEl.textContent = writable ? "⌨ typing" : "👁 view-only";
+  modeEl.title = writable ? "Click to stop typing into the session" : "Click to type into the session";
+  handleEl.hidden = !writable;
+}
+modeEl.addEventListener("click", () => {
+  writable = !writable;
+  if (!writable && sizeOwner) setSizeOwner(false);
+  showMode();
+  reconnect();
+});
+showMode();
+
+// The tab bar: the most recently active sessions, refreshed periodically,
+// and a button to start a new one.
 const tabsEl = document.getElementById("tabs");
 const maxTabs = 12;
 
@@ -198,7 +377,11 @@ async function refreshTabs() {
     else el.href = `/s/${encodeURIComponent(s.id)}`;
     return el;
   });
-  tabsEl.replaceChildren(...tabs);
+  const add = document.createElement("button");
+  add.textContent = "+";
+  add.title = "New session";
+  add.addEventListener("click", () => newSession(""));
+  tabsEl.replaceChildren(...tabs, add);
 }
 refreshTabs();
 setInterval(refreshTabs, 5000);

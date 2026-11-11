@@ -7,7 +7,9 @@ th { font-weight: 600; }
 a { color: inherit; }
 .dim { color: var(--dim); }
 
-body.viewer { margin: 0; background: #000; color: #ddd; }
+/* The viewer fills the window: header, tabs, and then the terminal area,
+   which scrolls by itself if the terminal is bigger than the window. */
+body.viewer { margin: 0; background: #000; color: #ddd; height: 100vh; display: flex; flex-direction: column; }
 body.viewer header { font-size: .85rem; padding: .4rem .8rem; background: #222; display: flex; gap: 1rem; align-items: baseline; }
 body.viewer header #status { margin-left: auto; }
 body.viewer #ident { cursor: text; }
@@ -16,6 +18,12 @@ nav#tabs { font-size: .8rem; padding: .25rem .8rem; background: #181818; display
 nav#tabs a, nav#tabs span { padding: .1rem .5rem; border-radius: .3rem; text-decoration: none; color: #aaa; }
 nav#tabs a:hover { background: #333; color: #fff; }
 nav#tabs .current { background: #444; color: #fff; }
+nav#tabs button { font: inherit; padding: 0 .5rem; color: #aaa; background: none; border: 1px solid #444; border-radius: .3rem; cursor: pointer; }
+nav#tabs button:hover { color: #fff; border-color: #888; }
+body.viewer header button { font: inherit; color: #ccc; background: #333; border: 0; border-radius: .3rem; padding: .1rem .5rem; cursor: pointer; }
+body.viewer header button:hover { background: #444; color: #fff; }
+form#new { margin: 0 0 1rem; display: flex; gap: .5rem; }
+form#new input, form#new button { font: inherit; padding: .3rem .6rem; }
 
 /* The area outside the terminal: a checkerboard whose squares are half a
    cell wide. The tile is 1ch of the terminal's font, holding two squares
@@ -23,9 +31,20 @@ nav#tabs .current { background: #444; color: #fff; }
 main.oob {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 14px; line-height: 1.2;
-  min-height: 100vh;
+  flex: 1; min-height: 0; overflow: auto;
   background: repeating-conic-gradient(#262626 0 25%, #1a1a1a 0 50%) 0 0 / 1ch 1ch;
 }
+/* The terminal and, at its bottom-right corner, out in the checkerboard,
+   the handle that toggles size-owning mode. */
+.term { position: relative; display: inline-block; vertical-align: top; margin: 0 2ch 1.2em 0; }
+#sizehandle {
+  position: absolute; right: -2ch; bottom: -1.2em; width: 2ch; height: 1.2em;
+  padding: 0; border: 0; border-radius: 0 0 .3em 0;
+  font: inherit; line-height: 1.2em; color: #777; background: #333; cursor: nwse-resize;
+}
+#sizehandle:hover { color: #fff; }
+#sizehandle.on { color: #000; background: #8c8; }
+.screen:focus { outline: none; }
 .screen {
   margin: 0; padding: 0;
   font: inherit;

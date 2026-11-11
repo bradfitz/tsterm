@@ -112,7 +112,7 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 		Socket:  sock,
 		Command: cfg.PTY.Command,
 		Args:    cfg.PTY.Args,
-		Env:     withTerm(cfg.PTY.Env),
+		Env:     sessionEnv(cfg.PTY.Env),
 		Dir:     cfg.PTY.Dir,
 		Rows:    rows,
 		Cols:    cols,
@@ -143,12 +143,21 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 // terminal the client runs in.
 const Term = "xterm-256color"
 
-// withTerm returns env with any TERM replaced by Term.
-func withTerm(env []string) []string {
+// sessionEnv returns the client-supplied env with any TERM replaced by
+// Term, and, unless the client chose a locale, LANG set to a UTF-8 one,
+// since the emulator is UTF-8. (The tsterm CLI sends its locale; a browser
+// does not.)
+func sessionEnv(env []string) []string {
 	out := slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
 		return strings.HasPrefix(kv, "TERM=")
 	})
-	return append(out, "TERM="+Term)
+	out = append(out, "TERM="+Term)
+	if !slices.ContainsFunc(out, func(kv string) bool {
+		return strings.HasPrefix(kv, "LANG=") || strings.HasPrefix(kv, "LC_ALL=")
+	}) {
+		out = append(out, "LANG=C.UTF-8")
+	}
+	return out
 }
 
 func (m *Manager) register(s *Session) error {

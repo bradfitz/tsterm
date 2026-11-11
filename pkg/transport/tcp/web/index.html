@@ -8,6 +8,10 @@
 </head>
 <body>
 <h1>tsterm sessions</h1>
+<form id="new">
+<input name="name" placeholder="name (optional)" spellcheck="false">
+<button type="submit">New session</button>
+</form>
 {{if .}}
 <table>
 <thead><tr><th>Session</th><th>Name</th><th>Active</th><th>Viewed</th><th>Size</th><th>Started</th><th>Watchers</th></tr></thead>
@@ -23,12 +27,17 @@
 </tr>{{end}}
 </tbody>
 </table>
-<p class="dim">Viewers are read-only. To type into a session, attach with <code>tsterm</code>.</p>
+<p class="dim">Open a session to watch it or type into it, or attach with <code>tsterm HOST NAME</code>.</p>
 {{else}}
-<p>No active sessions. Start one with <code>tsterm -new HOST [NAME]</code>.</p>
+<p>No active sessions.</p>
 {{end}}
-<script src="/static/rename.js"></script>
+<script src="/static/common.js"></script>
 <script>
+document.getElementById("new").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  newSession(ev.target.name.value.trim());
+});
+
 // Click a name to rename its session.
 for (const cell of document.querySelectorAll("td.rename")) {
   cell.addEventListener("click", () => {

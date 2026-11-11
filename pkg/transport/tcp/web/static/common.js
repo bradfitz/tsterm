@@ -1,9 +1,11 @@
+// Code shared by the tsterm web pages.
+"use strict";
+
 // startRename replaces el's contents with a text field for renaming the
 // session id, currently named current. Enter saves, through the API;
 // Escape or leaving the field cancels. On success, onDone is called with
 // the new name, and is responsible for redrawing el. An empty name
 // removes the session's name.
-"use strict";
 
 function startRename(el, id, current, onDone) {
   const saved = Array.from(el.childNodes);
@@ -42,4 +44,22 @@ function startRename(el, id, current, onDone) {
     onDone(name);
   });
   input.addEventListener("blur", cancel);
+}
+
+// newSession starts a session, named name unless it is empty, and opens
+// it, sized to the browser window: nothing else owns its size yet.
+async function newSession(name) {
+  const resp = await fetch("/v1/sessions", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "Accept": "application/json"},
+    body: JSON.stringify(name ? {name} : {}),
+  });
+  if (!resp.ok) {
+    let msg = resp.statusText;
+    try { msg = (await resp.json()).message || msg; } catch {}
+    alert(`Can't create a session: ${msg}`);
+    return;
+  }
+  const info = await resp.json();
+  location.href = `/s/${encodeURIComponent(info.id)}?fit`;
 }

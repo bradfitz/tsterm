@@ -1,14 +1,23 @@
-// Package ws implements the read-only WebSocket viewer for tsterm sessions.
+// Package ws implements the WebSocket viewer for tsterm sessions, which the
+// web UI uses.
 //
 // On connect, the server sends a CBOR-encoded Snapshot followed by Delta
 // frames for the duration of the session. WebSocket runs over TCP, which
-// delivers every frame in order, so no keyframes are needed. Inbound frames from the browser are accepted but ignored: the
-// first iteration is a viewer only, not an interactive client.
+// delivers every frame in order, so no keyframes are needed.
+//
+// A connection opened with ?write=1 may also drive the session, by sending
+// JSON text frames: {"input": "..."} to type, and {"resize": {"rows": R,
+// "cols": C}} to set the terminal size. Other connections are view-only,
+// and their inbound frames are ignored. (Today only the session's owner can
+// connect at all; view-only connections are what links shared with others
+// will get.)
 package ws
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/coder/websocket"
@@ -66,14 +75,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	// Drain inbound frames in the background so a browser that closes the
-	// connection (or sends pings) is observed promptly.
+	// Read inbound frames in the background: input from a writable
+	// connection, and otherwise just so that a browser closing the
+	// connection is noticed promptly.
+	writable := r.URL.Query().Get("write") == "1"
 	go func() {
 		defer cancel()
 		for {
-			_, _, err := conn.Read(ctx)
+			typ, b, err := conn.Read(ctx)
 			if err != nil {
 				return
+			}
+			if writable && typ == websocket.MessageText {
+				if err := s.handleInput(sess, b); err != nil {
+					s.Logf("ws: input from %s: %v", r.RemoteAddr, err)
+				}
 			}
 		}
 	}()
@@ -89,6 +105,39 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.Logf("ws: pump: %v", err)
 	}
 	conn.Close(websocket.StatusNormalClosure, "session ended")
+}
+
+// inputMsg is a frame from a writable connection.
+type inputMsg struct {
+	Input  string `json:"input,omitzero"`
+	Resize *struct {
+		Rows int `json:"rows"`
+		Cols int `json:"cols"`
+	} `json:"resize,omitzero"`
+}
+
+// maxDim bounds a requested terminal dimension.
+const maxDim = 1000
+
+func (s *Server) handleInput(sess *session.Session, b []byte) error {
+	var m inputMsg
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	if m.Input != "" {
+		if _, err := sess.WriteInput([]byte(m.Input)); err != nil {
+			return err
+		}
+	}
+	if rs := m.Resize; rs != nil {
+		if rs.Rows < 1 || rs.Cols < 1 || rs.Rows > maxDim || rs.Cols > maxDim {
+			return fmt.Errorf("bad size %dx%d", rs.Cols, rs.Rows)
+		}
+		if rows, cols := sess.Size(); rows != rs.Rows || cols != rs.Cols {
+			return sess.Resize(rs.Rows, rs.Cols)
+		}
+	}
+	return nil
 }
 
 // recheck cancels the connection's ctx once remoteAddr is no longer

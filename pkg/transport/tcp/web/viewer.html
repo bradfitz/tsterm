@@ -11,10 +11,11 @@
 <a href="/" class="home">← sessions</a>
 <span id="ident" class="rename" title="Double-click to rename"><b id="name">{{.Name}}</b> <code>{{.ID}}</code></span>
 <span id="status" class="dim">connecting…</span>
+<button id="mode" type="button"></button>
 </header>
 <nav id="tabs" aria-label="Recently active sessions"></nav>
-<main class="oob"><pre id="screen" class="screen" data-id="{{.ID}}"></pre></main>
-<script src="/static/rename.js"></script>
+<main class="oob"><div class="term"><pre id="screen" class="screen" data-id="{{.ID}}"></pre><button id="sizehandle" type="button" aria-label="Size to window">⇲</button></div></main>
+<script src="/static/common.js"></script>
 <script src="/static/viewer.js"></script>
 </body>
 </html>
