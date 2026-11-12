@@ -39,5 +39,11 @@ jobs:
       - name: Build tsterm-gui (no console window)
         if: runner.os == 'Windows'
         run: go build -ldflags=-H=windowsgui -o tsterm-gui.exe ./cmd/tsterm-gui
+      - name: Package tsterm.app
+        if: runner.os == 'macOS'
+        working-directory: cmd/tsterm-gui
+        run: |
+          go install fyne.io/tools/cmd/fyne@latest
+          fyne package -os darwin -release
       - name: Build the CLI
         run: go build ./cmd/tsterm

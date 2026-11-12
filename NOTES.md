@@ -238,6 +238,14 @@ encoding, palette), tested against real handlers. Not the UDP protocol yet.
   focused, else the system's), focus reports, auto-fit (on by default, a
   per-install preference) and fit once with size leadership, view-only mode,
   ended sessions (status, close), reconnecting. It remembers the last host.
+- **Packaging:** run as a bare binary, it gets a generic Dock icon on
+  macOS, which shows an app bundle's icon (GLFW ignores window icons
+  there). `fyne package -os darwin -release` in `cmd/tsterm-gui` (with
+  `go install fyne.io/tools/cmd/fyne@latest`), on a Mac, makes
+  `tsterm.app` from `FyneApp.toml` and `Icon.png` (a placeholder icon);
+  CI does it too. On Linux and Windows, the embedded icon is set at run
+  time, and `fyne package -os linux` makes a tarball with a `.desktop`
+  file.
 - **Building:** Fyne needs cgo. Linux builds natively (needs the GL/X11 dev
   headers); Windows cross-compiles with mingw
   (`CGO_ENABLED=1 GOOS=windows CC=x86_64-w64-mingw32-gcc`, add

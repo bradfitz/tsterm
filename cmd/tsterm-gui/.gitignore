@@ -1,0 +1,4 @@
+# Fyne packaging output (see FyneApp.toml).
+/tsterm.app/
+/tsterm.tar.xz
+/*.exe

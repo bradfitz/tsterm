@@ -59,8 +59,12 @@ type Term struct {
 	sel *selection
 
 	shift, ctrl, alt, super bool
-	suppress                rune // a rune TypedRune skips, after an Alt shortcut
-	suppressAt              time.Time
+
+	// suppressAt is when an Alt shortcut was typed. The character the
+	// same key makes may come after it, as TypedRune, which must not
+	// be typed too: the key itself on Linux, but on macOS, Option's own
+	// character for it, as "∫" for Option-B.
+	suppressAt time.Time
 
 	mouseButton int    // the button held, for mouse reports, or -1
 	mouseCell   [2]int // the last cell reported
@@ -456,10 +460,11 @@ func (t *Term) AcceptsTab() bool { return true }
 
 // TypedRune implements fyne.Focusable.
 func (t *Term) TypedRune(r rune) {
-	if r == t.suppress && time.Since(t.suppressAt) < 100*time.Millisecond {
-		t.suppress = 0
+	if !t.suppressAt.IsZero() && time.Since(t.suppressAt) < 100*time.Millisecond {
+		t.suppressAt = time.Time{}
 		return
 	}
+	t.suppressAt = time.Time{}
 	t.a.typeInput(string(r))
 }
 
@@ -599,8 +604,7 @@ func (t *Term) TypedShortcut(s fyne.Shortcut) {
 			return
 		}
 		if alt && k.Rune != 0 {
-			// The character may come as TypedRune too.
-			t.suppress, t.suppressAt = k.Rune, time.Now()
+			t.suppressAt = time.Now() // see suppressAt
 		}
 		t.a.typeInput(wsclient.KeyBytes(k, t.a.st.Screen.Modes.ApplicationCursor))
 	}
