@@ -287,3 +287,91 @@ func TestCloseAndPurge(t *testing.T) {
 		t.Error("purged session still frozen")
 	}
 }
+
+// viewerAuth authorizes every peer as a viewer, as tstermd's sharing node
+// does people other than the owner.
+type viewerAuth struct{}
+
+func (viewerAuth) Authorize(context.Context, string) (auth.Peer, error) {
+	return auth.Peer{Access: auth.Viewer, Login: "other@example.com"}, nil
+}
+func (viewerAuth) Changes() <-chan struct{} { return nil }
+
+// TestViewerAccess checks that a viewer sees only the sessions the owner
+// shares, and may change nothing.
+func TestViewerAccess(t *testing.T) {
+	srv := &Server{Manager: sessiontest.NewManager(t), Auth: viewerAuth{}, ShareURL: func() string { return "https://share.example/" }}
+	hts := httptest.NewServer(srv.Handler())
+	t.Cleanup(hts.Close)
+	mk := func(name string) *session.Session {
+		cfg := sleepCfg()
+		s, err := srv.Manager.Create(session.Config{Name: name, PTY: pty.Config{Command: cfg.Cmd[0], Args: cfg.Cmd[1:]}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	secret, open := mk("secret"), mk("open")
+	if err := srv.Manager.SetShared("open", true); err != nil {
+		t.Fatal(err)
+	}
+	do := func(method, path, body string) (int, string) {
+		t.Helper()
+		r, _ := http.NewRequest(method, hts.URL+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json")
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	code, body := do("GET", "/v1/sessions", "")
+	var list []proto.SessionSummary
+	if err := json.Unmarshal([]byte(body), &list); code != 200 || err != nil {
+		t.Fatalf("list: %d, %v", code, err)
+	}
+	if len(list) != 1 || list[0].ID != string(open.ID()) || !list[0].Shared {
+		t.Errorf("viewer's list = %+v, want just the shared session", list)
+	}
+	if code, _ := do("GET", "/s/"+string(secret.ID()), ""); code != http.StatusNotFound {
+		t.Errorf("viewer page of an unshared session: %d, want 404", code)
+	}
+	if code, _ := do("GET", "/s/"+string(open.ID()), ""); code != 200 {
+		t.Errorf("viewer page of a shared session: %d, want 200", code)
+	}
+	r, _ := http.NewRequest("GET", hts.URL+"/", nil)
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if page := string(b); strings.Contains(page, "secret") || !strings.Contains(page, ">open<") || strings.Contains(page, `id="new"`) || strings.Contains(page, `class="pencil"`) || strings.Contains(page, `class="share`) {
+		t.Errorf("viewer's index page shows too much:\n%s", page)
+	}
+
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/v1/sessions", `{}`},
+		{"GET", "/v1/sessions/open", ""},
+		{"DELETE", "/v1/sessions/open", ""},
+		{"PATCH", "/v1/sessions/open", `{"shared": true}`},
+		{"PATCH", "/v1/sessions/secret", `{"shared": true}`},
+		{"PATCH", "/v1/sessions/open", `{"name": "mine"}`},
+	} {
+		if code, _ := do(tc.method, tc.path, tc.body); code != http.StatusForbidden {
+			t.Errorf("viewer %s %s: %d, want 403", tc.method, tc.path, code)
+		}
+	}
+	if secret.Shared() || open.Name() != "open" {
+		t.Error("a viewer changed a session")
+	}
+	select {
+	case <-open.Done():
+		t.Error("a viewer killed a session")
+	default:
+	}
+}

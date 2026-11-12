@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/bradfitz/tsterm/pkg/auth"
 	"github.com/bradfitz/tsterm/pkg/proto"
 	"github.com/bradfitz/tsterm/pkg/pty"
 	"github.com/bradfitz/tsterm/pkg/session"
@@ -27,10 +28,22 @@ func mountTestServer(t *testing.T) (*Server, *httptest.Server) {
 		Manager: mgr,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/v1/sessions/{id}/ws", srv.Handler())
+	mux.Handle("/v1/sessions/{id}/ws", asPeer(srv.Handler()))
 	hts := httptest.NewServer(mux)
 	t.Cleanup(hts.Close)
 	return srv, hts
+}
+
+// asPeer stands in for the TCP transport's auth middleware: the peer is
+// the owner, or a viewer if the query has "as=viewer".
+func asPeer(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := auth.Peer{Access: auth.Owner}
+		if r.URL.Query().Get("as") == "viewer" {
+			p = auth.Peer{Access: auth.Viewer, Login: "other@example.com"}
+		}
+		h.ServeHTTP(w, r.WithContext(auth.WithPeer(r.Context(), p)))
+	})
 }
 
 func dialWS(t *testing.T, url string) (*websocket.Conn, context.Context, context.CancelFunc) {
@@ -413,5 +426,58 @@ func TestEndedAndFrozen(t *testing.T) {
 	fc.Write(ctx2, websocket.MessageText, []byte(`{"history":{"from":40,"count":2}}`))
 	if h := readEnv(t, fc, ctx2).History; h == nil || len(h.Lines) != 2 || h.Lines[0].Text != "old-40" {
 		t.Errorf("frozen history = %+v", h)
+	}
+}
+
+// TestSharedViewer checks that a viewer, someone other than the owner, may
+// watch only shared sessions, and never type into them, and is cut off
+// when the owner stops sharing.
+func TestSharedViewer(t *testing.T) {
+	srv, hts := mountTestServer(t)
+	sess, err := srv.Manager.Create(session.Config{PTY: pty.Config{Command: "/bin/cat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := "ws://" + hts.Listener.Addr().String() + "/v1/sessions/" + string(sess.ID()) + "/ws?as=viewer&write=1"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, resp, err := websocket.Dial(ctx, url, nil); err == nil || resp == nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("viewer of an unshared session: err = %v, resp = %v; want 404", err, resp)
+	}
+
+	if err := srv.Manager.SetShared(string(sess.ID()), true); err != nil {
+		t.Fatal(err)
+	}
+	conn, ctx, cancel := dialWS(t, url)
+	defer cancel()
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if env := readEnv(t, conn, ctx); env.Snapshot == nil {
+		t.Fatalf("first frame = %+v, want Snapshot", env)
+	}
+	conn.Write(ctx, websocket.MessageText, []byte(`{"input":"sneaky"}`))
+	conn.Write(ctx, websocket.MessageText, []byte(`{"resize":{"rows":30,"cols":100},"lead":true}`))
+	time.Sleep(200 * time.Millisecond)
+	if screenHas(sess, "sneaky", 0) {
+		t.Error("a viewer's input reached the session")
+	}
+	if r, c := sess.Size(); r == 30 && c == 100 {
+		t.Error("a viewer resized the session")
+	}
+
+	if err := srv.Manager.SetShared(string(sess.ID()), false); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		env := readEnv(t, conn, ctx)
+		if env.Ended != nil {
+			if env.Ended.Status != "no longer shared" {
+				t.Errorf("Ended = %+v", env.Ended)
+			}
+			break
+		}
+	}
+	if _, _, err := conn.Read(ctx); err == nil {
+		t.Error("connection still open after unsharing")
 	}
 }

@@ -45,8 +45,10 @@ import (
 )
 
 // Server wires the viewer handler to a session manager. Auth is enforced by
-// the surrounding TCP package's middleware; this handler runs only after a
-// caller has been authorized.
+// the surrounding TCP package's middleware, which puts the peer in each
+// request's context (auth.PeerFrom): the owner may watch, and drive, any
+// session; a viewer may watch, read-only, the sessions the owner shares;
+// anyone else, nothing.
 type Server struct {
 	Manager *session.Manager
 
@@ -54,7 +56,7 @@ type Server struct {
 	// addresses change, and a viewer whose peer is no longer authorized is
 	// disconnected. A viewer connection can last indefinitely, unlike the
 	// requests the TCP middleware checks.
-	Auth *auth.SelfUser
+	Auth auth.Authorizer
 
 	// Logf, if non-nil, logs per-connection errors. Defaults to no-op.
 	Logf func(format string, args ...any)
@@ -80,6 +82,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	peer := auth.PeerFrom(r.Context())
+	// visible reports whether the peer may still watch the session.
+	visible := func() bool {
+		switch peer.Access {
+		case auth.Owner:
+			return true
+		case auth.Viewer:
+			if frozen != nil {
+				f := s.Manager.Frozen(string(frozen.ID))
+				return f != nil && f.Shared
+			}
+			return sess.Shared()
+		}
+		return false
+	}
+	if !visible() {
+		http.Error(w, "no such session", http.StatusNotFound)
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Allow same-origin and any tailnet origin; the auth middleware
 		// already proved identity, so origin pinning would be redundant
@@ -94,8 +115,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	if s.Auth != nil {
+		go s.recheck(ctx, cancel, r.RemoteAddr, peer.Access)
+	}
 	if frozen != nil {
-		if err := s.serveFrozen(ctx, conn, frozen); err != nil && !errors.Is(err, context.Canceled) {
+		if err := s.serveFrozen(ctx, conn, frozen, visible); err != nil && !errors.Is(err, context.Canceled) {
 			s.Logf("ws: frozen %s: %v", frozen.ID, err)
 		}
 		conn.Close(websocket.StatusNormalClosure, "")
@@ -105,7 +129,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	// Read inbound frames in the background: input from a writable
 	// connection, and otherwise just so that a browser closing the
 	// connection is noticed promptly.
-	writable := r.URL.Query().Get("write") == "1"
+	// Only the owner may drive a session, whatever the viewer asks.
+	writable := peer.Access == auth.Owner && r.URL.Query().Get("write") == "1"
 	fl := &flow{enabled: r.URL.Query().Get("acks") == "1", acked: make(chan struct{}, 1)}
 	sizer := sess.NewSizer("a browser")
 	defer sizer.Close()
@@ -125,14 +150,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if s.Auth != nil {
-		go s.recheck(ctx, cancel, r.RemoteAddr)
-	}
 	if err := sess.MarkAttached(); err != nil {
 		s.Logf("ws: recording attach: %v", err)
 	}
 
-	if err := s.pump(ctx, conn, sess, sizer, fl, writable); err != nil && !errors.Is(err, context.Canceled) {
+	if err := s.pump(ctx, conn, sess, sizer, fl, writable, visible); err != nil && !errors.Is(err, context.Canceled) {
 		s.Logf("ws: pump: %v", err)
 	}
 	conn.Close(websocket.StatusNormalClosure, "session ended")
@@ -234,14 +256,20 @@ func (s *Server) handleMessage(ctx context.Context, conn *websocket.Conn, sess *
 
 // recheck cancels the connection's ctx once remoteAddr is no longer
 // authorized.
-func (s *Server) recheck(ctx context.Context, cancel context.CancelFunc, remoteAddr string) {
+// recheck cancels the connection's ctx once remoteAddr no longer has the
+// access it connected with.
+func (s *Server) recheck(ctx context.Context, cancel context.CancelFunc, remoteAddr string, access auth.Access) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-s.Auth.Changes():
 		}
-		if err := s.Auth.Allow(ctx, remoteAddr); err != nil {
+		p, err := s.Auth.Authorize(ctx, remoteAddr)
+		if err == nil && p.Access < access {
+			err = errors.New("less access than before")
+		}
+		if err != nil {
 			s.Logf("ws: disconnecting %s: %v", remoteAddr, err)
 			cancel()
 			return
@@ -249,7 +277,9 @@ func (s *Server) recheck(ctx context.Context, cancel context.CancelFunc, remoteA
 	}
 }
 
-func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.Session, sizer *session.Sizer, fl *flow, writable bool) error {
+// pump streams sess to conn while visible, which a viewer stops being
+// when the owner stops sharing it.
+func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.Session, sizer *session.Sizer, fl *flow, writable bool, visible func() bool) error {
 	w := sess.Watch(ctx)
 	defer func() { <-w.Done() }()
 
@@ -289,6 +319,9 @@ func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.S
 		case _, ok := <-w.Ticks():
 			if !ok {
 				return s.ended(ctx, conn, sess)
+			}
+			if !visible() {
+				return writeEnv(ctx, conn, proto.Envelope{Ended: &proto.Ended{Status: "no longer shared"}})
 			}
 			if err := sendSizing(); err != nil {
 				return err
@@ -352,8 +385,8 @@ func (s *Server) ended(ctx context.Context, conn *websocket.Conn, sess *session.
 }
 
 // serveFrozen shows the viewer a frozen session: its last screen, then
-// Ended, and then its history, as the viewer asks for it.
-func (s *Server) serveFrozen(ctx context.Context, conn *websocket.Conn, f *session.Frozen) error {
+// Ended, and then its history, as the viewer asks for it, while visible.
+func (s *Server) serveFrozen(ctx context.Context, conn *websocket.Conn, f *session.Frozen, visible func() bool) error {
 	ss, err := f.Screen()
 	if err != nil {
 		s.Logf("ws: frozen %s has no screen: %v", f.ID, err)
@@ -379,6 +412,9 @@ func (s *Server) serveFrozen(ctx context.Context, conn *websocket.Conn, f *sessi
 		var m inputMsg
 		if typ != websocket.MessageText || json.Unmarshal(b, &m) != nil || m.History == nil {
 			continue
+		}
+		if !visible() {
+			return nil
 		}
 		if err := sendHistory(ctx, conn, h, m.History.From, m.History.Count); err != nil {
 			return err

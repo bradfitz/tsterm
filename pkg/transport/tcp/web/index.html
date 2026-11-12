@@ -8,56 +8,59 @@
 </head>
 <body>
 <h1>tsterm sessions</h1>
-<form id="new">
+{{if .Owner}}<form id="new">
 <input name="name" placeholder="name (optional)" spellcheck="false">
 <button type="submit">New session</button>
 <button type="button" id="demo" title="Start tsterm's demo program, which shows off what a terminal can do">Try the demo</button>
 </form>
+{{else}}<p class="dim">Sessions shared with you, to watch, read-only.</p>
+{{end}}
 {{if .Live}}
 <h2 id="running">Running</h2>
 <table>
-<thead><tr><th>Name</th><th>Active</th><th class="wide">Viewed</th><th class="wide">Started</th><th class="wide">Watchers</th><th>Tab</th></tr></thead>
+<thead><tr><th>Name</th><th>Active</th><th class="wide">Viewed</th><th class="wide">Started</th><th class="wide">Watchers</th>{{if .Owner}}<th>Tab</th>{{end}}</tr></thead>
 <tbody>
 {{range .Live}}<tr{{if .Closed}} class="closed"{{end}}>
-<td class="name" data-id="{{.ID}}" data-name="{{.Name}}"><a href="/s/{{.ID}}" title="{{.ID}}"{{if not .Name}} class="unnamed"{{end}}>{{.Label}}</a><button type="button" class="pencil" title="Rename" aria-label="Rename">✎</button></td>
+<td class="name" data-id="{{.ID}}" data-name="{{.Name}}"><a href="/s/{{.ID}}" title="{{.ID}}"{{if not .Name}} class="unnamed"{{end}}>{{.Label}}</a>{{if $.Owner}}<button type="button" class="pencil" title="Rename" aria-label="Rename">✎</button>{{template "share" (shareArgs $ .ID .Shared)}}{{end}}</td>
 <td>{{.Activity}}</td>
 <td class="wide">{{.Attach}}</td>
 <td class="wide">{{.Age}}</td>
 <td class="wide">{{.Watchers}}</td>
-<td>{{if .Closed}}<button type="button" class="reopen" data-id="{{.ID}}" title="Give it a tab again">reopen</button>{{else}}<span class="dim">open</span>{{end}}</td>
+{{if $.Owner}}<td>{{if .Closed}}<button type="button" class="reopen" data-id="{{.ID}}" title="Give it a tab again">reopen</button>{{else}}<span class="dim">open</span>{{end}}</td>{{end}}
 </tr>{{end}}
 </tbody>
 </table>
-<p class="dim">Open a session to watch it or type into it, or attach with <code>tsterm HOST NAME</code>. Closing a session's tab leaves it running, here.</p>
+{{if .Owner}}<p class="dim">Open a session to watch it or type into it, or attach with <code>tsterm HOST NAME</code>. Closing a session's tab leaves it running, here.</p>{{end}}
 {{else}}
-<p>No running sessions.</p>
+<p>No running sessions{{if not .Owner}} shared with you{{end}}.</p>
 {{end}}
 {{with .Ended}}
 <h2 id="ended">Ended</h2>
 <table>
-<thead><tr><th>Name</th><th class="wide">Command</th><th class="wide">Started</th><th>Ended</th><th>How</th><th>Tab</th><th></th></tr></thead>
+<thead><tr><th>Name</th><th class="wide">Command</th><th class="wide">Started</th><th>Ended</th><th>How</th>{{if $.Owner}}<th>Tab</th><th></th>{{end}}</tr></thead>
 <tbody>
 {{range .}}<tr{{if .Closed}} class="closed"{{end}}>
-<td class="name"><a href="/s/{{.ID}}" title="{{.ID}}"{{if not .Name}} class="unnamed"{{end}}>{{.Label}}</a></td>
+<td class="name"><a href="/s/{{.ID}}" title="{{.ID}}"{{if not .Name}} class="unnamed"{{end}}>{{.Label}}</a>{{if $.Owner}}{{template "share" (shareArgs $ .ID .Shared)}}{{end}}</td>
 <td class="wide">{{with .Cmd}}<code>{{.}}</code>{{else}}<span class="dim">shell</span>{{end}}</td>
 <td class="wide">{{.Age}}</td>
 <td>{{.Ended}}</td>
 <td>{{.Status}}</td>
-<td>{{if .Closed}}<button type="button" class="reopen" data-id="{{.ID}}" title="Give it a tab again">reopen</button>{{else}}<span class="dim">open</span>{{end}}</td>
-<td><button type="button" class="purge" data-id="{{.ID}}" title="Delete its screen and history, for good">delete forever</button></td>
+{{if $.Owner}}<td>{{if .Closed}}<button type="button" class="reopen" data-id="{{.ID}}" title="Give it a tab again">reopen</button>{{else}}<span class="dim">open</span>{{end}}</td>
+<td><button type="button" class="purge" data-id="{{.ID}}" title="Delete its screen and history, for good">delete forever</button></td>{{end}}
 </tr>{{end}}
 </tbody>
 </table>
 {{if gt $.MoreEnded 0}}<p class="dim">And {{$.MoreEnded}} older.</p>{{end}}
 <p class="dim">Ended sessions keep their last screen and history, to look at, for a year.</p>
 {{end}}
+{{define "share"}}{{if .ShareURL}}<button type="button" class="share{{if .Shared}} shared{{end}}" data-id="{{.ID}}" data-shared="{{.Shared}}" title="{{if .Shared}}Shared, read-only, at {{.ShareURL}}. Click to stop sharing.{{else}}Share, read-only, at {{.ShareURL}}{{end}}">{{if .Shared}}shared{{else}}share…{{end}}</button>{{end}}{{end}}
 <script src="/static/common.js"></script>
 <script>
-document.getElementById("new").addEventListener("submit", (ev) => {
+document.getElementById("new")?.addEventListener("submit", (ev) => {
   ev.preventDefault();
   newSession(ev.target.name.value.trim());
 });
-document.getElementById("demo").addEventListener("click", () => newSession(demoName));
+document.getElementById("demo")?.addEventListener("click", () => newSession(demoName));
 
 // A name's pencil renames its session.
 for (const pencil of document.querySelectorAll("td.name .pencil")) {
@@ -91,6 +94,25 @@ for (const b of document.querySelectorAll("button.reopen")) {
     done.textContent = "open";
     b.replaceWith(done);
   });
+}
+
+// Share a session, read-only, on the sharing node, after asking; or stop.
+const shareURL = {{.ShareURL}};
+for (const b of document.querySelectorAll("button.share")) {
+  b.addEventListener("click", async () => {
+    const share = b.dataset.shared !== "true";
+    if (share && !confirm(`Share this session, read-only, with the people who can reach ${shareURL}?\n\nThey'll see what's on its screen, and its history.`)) return;
+    if (await setShared(b.dataset.id, share)) location.reload();
+  });
+}
+async function setShared(id, shared) {
+  const resp = await fetch(`/v1/sessions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json", "Accept": "application/json"},
+    body: JSON.stringify({shared}),
+  });
+  if (!resp.ok) alert(`Can't change sharing: ${resp.statusText}`);
+  return resp.ok;
 }
 
 // Delete an ended session for good.

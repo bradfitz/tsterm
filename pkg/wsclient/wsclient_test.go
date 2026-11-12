@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bradfitz/tsterm/pkg/auth"
 	"github.com/bradfitz/tsterm/pkg/proto"
 	"github.com/bradfitz/tsterm/pkg/pty"
 	"github.com/bradfitz/tsterm/pkg/session"
@@ -133,7 +134,11 @@ func TestHistory(t *testing.T) {
 func TestLive(t *testing.T) {
 	mgr := sessiontest.NewManager(t)
 	mux := http.NewServeMux()
-	mux.Handle("/v1/sessions/{id}/ws", (&ws.Server{Manager: mgr}).Handler())
+	wsh := (&ws.Server{Manager: mgr}).Handler()
+	mux.Handle("/v1/sessions/{id}/ws", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// As the owner, as the TCP transport's auth would have it.
+		wsh.ServeHTTP(w, r.WithContext(auth.WithPeer(r.Context(), auth.Peer{Access: auth.Owner})))
+	}))
 	hts := httptest.NewServer(mux)
 	t.Cleanup(hts.Close)
 	c := NewClient(strings.TrimPrefix(hts.URL, "http://"))

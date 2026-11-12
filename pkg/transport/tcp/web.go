@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bradfitz/tsterm/pkg/auth"
 	"github.com/bradfitz/tsterm/pkg/session"
 )
 
@@ -21,7 +22,12 @@ import (
 var webFS embed.FS
 
 var (
-	webTmpl = template.Must(template.ParseFS(webFS, "web/*.html"))
+	webTmpl = template.Must(template.New("").Funcs(template.FuncMap{
+		// shareArgs is what the index's "share" template needs.
+		"shareArgs": func(page map[string]any, id string, shared bool) map[string]any {
+			return map[string]any{"ShareURL": page["ShareURL"], "ID": id, "Shared": shared}
+		},
+	}).ParseFS(webFS, "web/*.html"))
 	webRoot = must(fs.Sub(webFS, "web")) // serves /static/
 )
 
@@ -34,6 +40,7 @@ func must[T any](v T, err error) T {
 
 type indexRow struct {
 	ID, Name, Label  string // Label is Name, or the ID's start (see label)
+	Shared           bool
 	Age              string // how long ago it started
 	Activity, Attach string // how long ago
 	Watchers         int
@@ -43,6 +50,7 @@ type indexRow struct {
 // endedRow is a frozen session on the index page.
 type endedRow struct {
 	ID, Name, Label, Status, Cmd string
+	Shared                       bool
 	Age, Ended                   string // how long ago
 	Closed                       bool
 	ended                        time.Time
@@ -65,13 +73,17 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	slices.SortStableFunc(summaries, func(a, b session.Summary) int {
 		return b.LastActivity().Compare(a.LastActivity())
 	})
+	owner := auth.PeerFrom(r.Context()).Access == auth.Owner
 	var rows []indexRow
 	var ended []endedRow
 	for _, sm := range summaries {
+		if !owner && !sm.Shared {
+			continue
+		}
 		if !sm.Ended.IsZero() || sm.Status != "" {
 			ended = append(ended, endedRow{
 				ID: string(sm.ID), Name: sm.Name, Label: label(sm.ID, sm.Name), Status: sm.Status, Cmd: strings.Join(sm.Cmd, " "),
-				Age: ago(sm.Created), Ended: ago(sm.Ended), Closed: sm.Closed, ended: sm.Ended,
+				Age: ago(sm.Created), Ended: ago(sm.Ended), Closed: sm.Closed, Shared: sm.Shared, ended: sm.Ended,
 			})
 			continue
 		}
@@ -87,12 +99,16 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			Attach:   ago(sm.LastAttach),
 			Watchers: sm.Watchers,
 			Closed:   sm.Closed,
+			Shared:   sm.Shared,
 		})
 	}
 	slices.SortStableFunc(ended, func(a, b endedRow) int { return b.ended.Compare(a.ended) })
 	more := len(ended) - maxEndedRows
 	ended = ended[:min(len(ended), maxEndedRows)]
-	s.render(w, "index.html", map[string]any{"Live": rows, "Ended": ended, "MoreEnded": more})
+	s.render(w, "index.html", map[string]any{
+		"Live": rows, "Ended": ended, "MoreEnded": more,
+		"Owner": owner, "ShareURL": s.shareURL(),
+	})
 }
 
 // ago describes how long ago t was, or returns "never" for the zero time.
@@ -114,11 +130,18 @@ func ago(t time.Time) string {
 
 func (s *Server) viewer(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	data := map[string]string{}
+	if !s.visible(r.Context(), id) {
+		http.Error(w, "no such session", http.StatusNotFound)
+		return
+	}
+	data := map[string]any{
+		"Role":     auth.PeerFrom(r.Context()).Access.String(),
+		"ShareURL": s.shareURL(),
+	}
 	if sess, err := s.Manager.Resolve(id); err == nil {
-		data["ID"], data["Name"] = string(sess.ID()), sess.Name()
+		data["ID"], data["Name"], data["Shared"] = string(sess.ID()), sess.Name(), sess.Shared()
 	} else if f := s.Manager.Frozen(id); f != nil {
-		data["ID"], data["Name"] = string(f.ID), f.Name
+		data["ID"], data["Name"], data["Shared"] = string(f.ID), f.Name, f.Shared
 	} else {
 		http.Error(w, "no such session", http.StatusNotFound)
 		return

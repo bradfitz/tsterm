@@ -207,10 +207,18 @@ function applyDelta(d) {
   if (d.rz) renderAll(); else touched.forEach(rerenderRow);
 }
 
+// The page's role is what the server lets us do: "owner", everything, or
+// "viewer", watching a session someone shared with us, read-only. shareURL,
+// for the owner, is where tstermd's sharing node serves the sessions they
+// share, if it has one.
+const owner = document.body.dataset.role === "owner";
+const shareURL = document.body.dataset.shareUrl || "";
+let shared = document.body.dataset.shared === "1";
+
 // Options, from the URL: ?ro for view-only, ?fit to fit the session to the
 // window once, as for a new session.
 const params = new URLSearchParams(location.search);
-let writable = !params.has("ro");
+let writable = owner && !params.has("ro");
 let fitOnConnect = params.has("fit");
 if (fitOnConnect) history.replaceState(history.state, "", location.pathname + location.search.replace(/[?&]fit\b/, "").replace(/^&/, "?"));
 
@@ -860,10 +868,10 @@ areaEl.addEventListener("scroll", () => {
 const modeEl = document.getElementById("mode");
 const closeEndedEl = document.getElementById("closeended");
 function showMode() {
-  closeEndedEl.hidden = !ended;
+  closeEndedEl.hidden = !ended || !owner;
   modeEl.textContent = writable ? "⌨ typing" : "👁 view-only";
   modeEl.title = writable ? "Click to stop typing into the session" : "Click to type into the session";
-  modeEl.hidden = !!ended;
+  modeEl.hidden = !!ended || !owner;
   for (const b of document.querySelectorAll(".autofit")) b.hidden = !writable || !!ended;
   updateCornerHandle();
 }
@@ -1055,6 +1063,7 @@ function setClosed(id, closed) {
 }
 
 async function refreshTabs() {
+  if (!owner) return; // viewers have no tabs, but this session's
   if (tabsEl.querySelector("input")) return; // renaming
   let list;
   try {
@@ -1066,6 +1075,10 @@ async function refreshTabs() {
   }
   if (tabsEl.querySelector("input")) return;
   const self = list.find(s => s.id === sessionID);
+  if (self && !!self.shared !== shared) {
+    shared = !!self.shared;
+    showMenu();
+  }
   if (reopenSelf && self) {
     reopenSelf = false;
     if (self.closed) {
@@ -1142,6 +1155,11 @@ function currentTab(s) {
   const label = document.createElement("span");
   label.className = "label";
   label.textContent = tabLabel(s);
+  if (!owner) {
+    // A viewer may neither rename the session nor close its tab.
+    el.append(label);
+    return el;
+  }
   label.title = "Double-click to rename";
   label.addEventListener("dblclick", () => {
     if (label.querySelector("input")) return;
@@ -1269,6 +1287,8 @@ function switchTo(id, name, push) {
   screenEl.replaceChildren();
   resetHistory();
   statusEl.textContent = "connecting…";
+  shared = false; // until refreshTabs says
+  showMenu();
   reopenSelf = true;
   reconnect();
   refreshTabs();
@@ -1278,6 +1298,80 @@ window.addEventListener("popstate", (ev) => {
   if (ev.state && ev.state.id) switchTo(ev.state.id, ev.state.name, false);
   else location.reload();
 });
+
+// The owner's menu, ☰, shares the session, read-only, through the sharing
+// node, or stops sharing it. It's there only if tstermd has a sharing node.
+const menuEl = document.getElementById("menu");
+const menuPopEl = document.getElementById("menupop");
+function showMenu() {
+  menuEl.hidden = !owner || !shareURL;
+  menuEl.classList.toggle("shared", shared);
+  menuEl.title = shared ? `Shared, read-only, at ${shareURL}` : "More";
+  if (!menuPopEl.hidden) fillMenu();
+}
+function shareLink() { return new URL(`s/${encodeURIComponent(sessionID)}`, shareURL).href; }
+function menuItem(text, title, onclick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.setAttribute("role", "menuitem");
+  b.textContent = text;
+  b.title = title;
+  b.addEventListener("click", () => { closeMenu(); onclick(); });
+  return b;
+}
+function fillMenu() {
+  const items = [];
+  if (!shared) {
+    items.push(menuItem("Share read-only…", `Let the people who can reach ${shareURL} watch this session`, () => setShared(true)));
+  } else {
+    items.push(menuItem("Copy share link", shareLink(), () => {
+      navigator.clipboard?.writeText(shareLink()).then(() => showToast("Copied", shareLink()), () => prompt("Share link:", shareLink()));
+    }));
+    items.push(menuItem("Stop sharing", "Stop letting others watch this session", () => setShared(false)));
+  }
+  menuPopEl.replaceChildren(...items);
+}
+function closeMenu() {
+  menuPopEl.hidden = true;
+  menuEl.setAttribute("aria-expanded", "false");
+}
+menuEl.addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  if (!menuPopEl.hidden) { closeMenu(); return; }
+  fillMenu();
+  menuPopEl.hidden = false;
+  menuEl.setAttribute("aria-expanded", "true");
+});
+document.addEventListener("click", (ev) => {
+  if (!menuPopEl.hidden && !menuPopEl.contains(ev.target)) closeMenu();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !menuPopEl.hidden) { closeMenu(); ev.stopPropagation(); }
+}, true);
+
+// setShared shares the session, after asking, or stops sharing it.
+async function setShared(on) {
+  const name = sessionName || sessionID;
+  if (on && !confirm(`Share "${name}", read-only, with the people who can reach ${shareURL}?\n\nThey'll see its screen and history, live, but can't type into it.`)) return;
+  const id = sessionID;
+  const resp = await fetch(`/v1/sessions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json", "Accept": "application/json"},
+    body: JSON.stringify({shared: on}),
+  });
+  if (!resp.ok) {
+    showToast("Couldn't change sharing", await resp.text());
+    return;
+  }
+  if (id !== sessionID) return;
+  shared = on;
+  showMenu();
+  if (on) showToast("Shared, read-only", shareLink());
+}
+showMenu();
+if (!owner) {
+  document.querySelector("header .home").textContent = "← shared sessions";
+}
 
 // An ended session's header has a button to close its tab.
 closeEndedEl.addEventListener("click", () => {

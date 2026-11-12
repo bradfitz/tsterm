@@ -37,7 +37,31 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   (sortable by activity or attach time), rename, and kill sessions.
 - **Auth** (`pkg/auth`): only the node owner's tailnet user; peer identities
   are tracked from the IPN bus. Listens on all Tailscale addresses (IPv4 and
-  IPv6).
+  IPv6). Every request's peer (`auth.Peer`, from an `auth.Authorizer`, put
+  in its context by `auth.Middleware`) has an `auth.Access`: `Owner`
+  (everything), `Viewer` (read-only, shared sessions only), or none.
+- **Sharing node** (`-share-hostname braid-shell -share-tags
+  tag:bradfitz-experiments`; `cmd/tstermd/share.go`): a second Tailscale
+  node, tsnet, inside tstermd, usually tagged so that people the owner's
+  machines are closed to by ACLs can reach it. It serves the web UI on 443
+  (HTTPS, required) and 80 (redirecting to 443), from the same session
+  manager. `auth.Sharing` compares its peers' WhoIs with the owner of the
+  host's tailscaled: the same login name (case-insensitively) is the
+  Owner, with full access; any other person is a Viewer; tagged devices
+  get nothing, whoever owns their tags. Viewers see only the sessions the
+  owner has shared (the session's `Shared` property, kept in its info
+  file, live or frozen), in the list and viewer, read-only: no typing,
+  sizing, tabs, renaming, creating, closing, or info (which has the attach
+  token); 403s on the mutating API, 404s for unshared sessions. A viewer
+  watching a session is cut off ("no longer shared") when it's unshared,
+  and on peer changes, whoever's access drops is too. The owner shares
+  from the list's hover "share…" button (a green "shared" badge after) or
+  the viewer's ☰ menu (share, copy link, stop sharing), each asking first;
+  they're shown only once the sharing node is up (`tcp.Server.ShareURL`).
+  The node's state is in the sessions dir plus `-share-node`; it logs a
+  login URL the first time, unless `$TS_AUTHKEY` is set. Next: per-person
+  typing access to sessions (an ACL per session instead of one bit, and
+  `Access` per session rather than per peer).
 - **CLI client** (`cmd/tsterm`): attach, list, create, kill; status line when
   the server is unreachable; Ctrl-^ . disconnects; mirrors mouse, bracketed
   paste, cursor-key, and focus modes onto the local terminal.
@@ -321,8 +345,9 @@ encoding, palette), tested against real handlers. Not the UDP protocol yet.
   they need no Tailscale app. Rendering is a grid of styled glyphs (font
   fallback, graphemes, procedural box drawing); no VT parsing on clients.
 - **tstermd as a tailcat listener**, alongside the tailnet listeners.
-- **Read-only share links**: WebSocket connections without `?write=1` are
-  already view-only; needs a way to grant non-owners view access.
+- **Sharing, more**: per-person access (watch or type) to sessions;
+  sharing in the Fyne GUI (it shows no share state yet); live viewer counts
+  by person; a sharing node without HTTPS certificates.
 - **Protocol gaps** for GUI clients: scrollback; client theme colors (the
   emulator answers color queries with its own defaults).
 - **Web UI**: keys browsers keep (Ctrl-W, Ctrl-T); a font-size control, for

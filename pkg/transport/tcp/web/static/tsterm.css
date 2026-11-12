@@ -177,3 +177,24 @@ td.name .pencil:hover { color: inherit; }
 tr:hover td.name .pencil, td.name .pencil:focus-visible { visibility: visible; }
 @media (pointer: coarse) { td.name .pencil { visibility: visible; } }
 h2 { font-weight: 600; font-size: 1.1rem; margin-top: 1.5rem; }
+
+/* Sharing a session, read-only, through tstermd's sharing node. In the
+   list, a row's share button shows on hover, as its pencil does, but a
+   shared session's is always there, as a badge. */
+td.name .share { visibility: hidden; margin-left: .3rem; padding: 0 .35rem; border: 1px solid transparent; border-radius: .6rem; background: none; color: var(--dim); font: inherit; font-size: .8em; cursor: pointer; }
+td.name .share:hover { color: inherit; border-color: #8886; }
+tr:hover td.name .share, td.name .share:focus-visible { visibility: visible; }
+td.name .share.shared { visibility: visible; color: #6c6; border-color: #6c68; }
+@media (pointer: coarse) { td.name .share { visibility: visible; } }
+
+/* The viewer's ☰ menu, for the owner; it's green while the session is
+   shared. */
+body.viewer header { position: relative; }
+body.viewer header #menu.shared { color: #6c6; box-shadow: inset 0 0 0 1px #6c68; }
+#menupop {
+  position: absolute; top: 100%; right: .5rem; z-index: 20; display: flex; flex-direction: column;
+  min-width: 12rem; padding: .3rem; background: #2a2a2a; border: 1px solid #444; border-radius: .4rem; box-shadow: 0 .2rem .8rem #000a;
+}
+#menupop[hidden] { display: none; }
+body.viewer header #menupop button { text-align: left; background: none; padding: .35rem .6rem; }
+body.viewer header #menupop button:hover { background: #3a3a3a; }

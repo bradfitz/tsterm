@@ -52,8 +52,9 @@ var ErrUnauthorized = errors.New("auth: unauthorized")
 type SelfUser struct {
 	lc WhoIsClient
 
-	mu   sync.Mutex
-	self tailcfg.UserID
+	mu        sync.Mutex
+	self      tailcfg.UserID
+	selfLogin string // self's login name, as "bob@example.com"
 
 	// nodes is the tailnet as last reported on the IPN bus, including the
 	// local node, or nil before the first report. owner is derived from
@@ -82,11 +83,23 @@ func NewSelfUser(ctx context.Context, lc WhoIsClient) (*SelfUser, error) {
 	if st == nil || st.Self == nil || st.Self.UserID == 0 {
 		return nil, errors.New("auth: local node has no UserID")
 	}
-	return &SelfUser{
+	a := &SelfUser{
 		lc:      lc,
 		self:    st.Self.UserID,
 		changed: make(chan struct{}),
-	}, nil
+	}
+	if u, ok := st.User[st.Self.UserID]; ok {
+		a.selfLogin = u.LoginName
+	}
+	return a, nil
+}
+
+// SelfLogin returns the local node's owner's login name, or "" if it's
+// unknown.
+func (a *SelfUser) SelfLogin() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.selfLogin
 }
 
 // SelfUserID returns the local node's owner UserID.
@@ -154,6 +167,9 @@ func (a *SelfUser) ApplyNotify(n ipn.Notify) {
 			a.setStatusLocked(st.Self)
 			if st.Self.UserID != 0 {
 				a.self = st.Self.UserID
+				if u, ok := st.User[st.Self.UserID]; ok && u.LoginName != "" {
+					a.selfLogin = u.LoginName
+				}
 			}
 		}
 		for _, ps := range st.Peer {
@@ -246,16 +262,8 @@ func (a *SelfUser) Watch(ctx context.Context, lc *local.Client, logf func(format
 }
 
 // HTTPMiddleware wraps h to enforce Allow against r.RemoteAddr. On failure
-// it responds 403 with a small CBOR error body.
-func (a *SelfUser) HTTPMiddleware(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := a.Allow(r.Context(), r.RemoteAddr); err != nil {
-			writeAuthError(w, r, err)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
-}
+// it responds 403 with a small CBOR error body. It's Middleware(a, h).
+func (a *SelfUser) HTTPMiddleware(h http.Handler) http.Handler { return Middleware(a, h) }
 
 func writeAuthError(w http.ResponseWriter, r *http.Request, err error) {
 	if strings.Contains(r.Header.Get("Accept"), "text/html") {
@@ -263,7 +271,7 @@ func writeAuthError(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
 		io.WriteString(w, `<!doctype html><title>tsterm: forbidden</title>`+
-			`<p>Only the owner of this machine's Tailscale node may use tsterm here.`)
+			`<p>You don't have access to tsterm here. It's for its owner, and, on its sharing node, the people they share sessions with.`)
 		return
 	}
 	w.Header().Set("Content-Type", proto.ContentType)

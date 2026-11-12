@@ -36,6 +36,7 @@ type Frozen struct {
 	Cmd    []string  // the command, or nil for the login shell
 	Closed bool      // out of the open set (see Manager.SetClosed)
 	Opened time.Time // when it last joined the open set
+	Shared bool      // shared by the owner (see Manager.SetShared)
 
 	dir  string
 	size int64 // of dir, roughly
@@ -72,6 +73,7 @@ type info struct {
 	Cmd    []string  `json:"cmd,omitzero"`
 	Closed bool      `json:"closed,omitzero"`
 	Opened time.Time `json:"opened,omitzero"`
+	Shared bool      `json:"shared,omitzero"`
 }
 
 // info returns f's info, to save.
@@ -80,7 +82,7 @@ func (f *Frozen) info() info {
 		Name: f.Name, Created: f.Created,
 		LastInput: f.LastInput, LastOutput: f.LastOutput, LastAttach: f.LastAttach,
 		Ended: f.Ended, Status: f.Status,
-		Cmd: f.Cmd, Closed: f.Closed, Opened: f.Opened,
+		Cmd: f.Cmd, Closed: f.Closed, Opened: f.Opened, Shared: f.Shared,
 	}
 }
 
@@ -109,6 +111,7 @@ func (s *Session) saveInfo(ended time.Time, status string) {
 		Cmd:        s.Cmd(),
 	}
 	in.Closed, in.Opened = s.Closed()
+	in.Shared = s.Shared()
 	s.infoMu.Lock()
 	defer s.infoMu.Unlock()
 	if err := saveInfoFile(s.dir, in); err != nil {
@@ -135,6 +138,7 @@ func (s *Session) frozen() *Frozen {
 		Cmd:        s.Cmd(),
 		Closed:     closed,
 		Opened:     opened,
+		Shared:     s.Shared(),
 		ID:         s.id,
 		Name:       s.Name(),
 		Created:    s.created,
@@ -170,6 +174,7 @@ func loadFrozen(dir string) (*Frozen, error) {
 		Cmd:        in.Cmd,
 		Closed:     in.Closed,
 		Opened:     in.Opened,
+		Shared:     in.Shared,
 		dir:        dir,
 		size:       dirSize(dir),
 	}
@@ -298,6 +303,26 @@ func (m *Manager) SetClosed(idOrName string, closed bool) error {
 	if !closed {
 		f.Opened = time.Now()
 	}
+	return saveInfoFile(f.dir, f.info())
+}
+
+// SetShared shares the session, live or frozen, with the given ID or name,
+// or stops sharing it: others reaching tstermd's sharing node may look at
+// a shared session, read-only.
+func (m *Manager) SetShared(idOrName string, shared bool) error {
+	if s, err := m.Resolve(idOrName); err == nil {
+		return s.setShared(shared)
+	}
+	f := m.Frozen(idOrName)
+	if f == nil {
+		return ErrNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if f.Shared == shared {
+		return nil
+	}
+	f.Shared = shared
 	return saveInfoFile(f.dir, f.info())
 }
 

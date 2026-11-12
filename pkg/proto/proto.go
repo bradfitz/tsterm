@@ -208,6 +208,10 @@ type SessionSummary struct {
 	// the open set.
 	Closed bool      `cbor:"cl,omitempty" json:"closed,omitzero"`
 	Opened time.Time `cbor:"op,omitempty" json:"opened,omitzero"`
+
+	// Shared is set if the owner shares the session: others reaching
+	// tstermd's sharing node may look at it, read-only.
+	Shared bool `cbor:"sh,omitempty" json:"shared,omitzero"`
 }
 
 // CreateSessionReq is the body of POST /v1/sessions.
@@ -230,6 +234,10 @@ type UpdateSessionReq struct {
 	// user's open set (the sessions they have tabs for), or into it. A
 	// closed session runs on.
 	Closed *bool `cbor:"closed,omitempty" json:"closed,omitzero"`
+
+	// Shared, if non-nil, shares the session, live or ended, or stops
+	// sharing it (see SessionSummary.Shared).
+	Shared *bool `cbor:"shared,omitempty" json:"shared,omitzero"`
 }
 
 // SessionInfo is returned by POST /v1/sessions and by GET /v1/sessions/{id}.

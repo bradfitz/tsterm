@@ -394,6 +394,7 @@ type Summary struct {
 	Cmd    []string  // the command, or nil for the login shell
 	Closed bool      // out of the open set (see SetClosed)
 	Opened time.Time // when it last joined the open set
+	Shared bool      // shared by the owner (see SetShared)
 
 	LastInput  time.Time // keyboard input sent to the child
 	LastOutput time.Time // output from the child, changing the screen
@@ -429,6 +430,7 @@ func (m *Manager) List() []Summary {
 			LastOutput: s.LastOutput(),
 			LastAttach: s.LastAttach(),
 			Cmd:        s.Cmd(),
+			Shared:     s.Shared(),
 		})
 		out[len(out)-1].Closed, out[len(out)-1].Opened = s.Closed()
 	}
@@ -445,6 +447,7 @@ func (m *Manager) List() []Summary {
 			Cmd:        f.Cmd,
 			Closed:     f.Closed,
 			Opened:     f.Opened,
+			Shared:     f.Shared,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })

@@ -20,6 +20,7 @@ import (
 
 type fakeLC struct {
 	self      tailcfg.UserID
+	selfLogin string
 	who       map[string]*apitype.WhoIsResponse
 	whoErr    map[string]error
 	statusErr error
@@ -42,6 +43,7 @@ func (f *fakeLC) Status(context.Context) (*ipnstate.Status, error) {
 	}
 	return &ipnstate.Status{
 		Self: &ipnstate.PeerStatus{UserID: f.self},
+		User: map[tailcfg.UserID]tailcfg.UserProfile{f.self: {LoginName: f.selfLogin}},
 	}, nil
 }
 

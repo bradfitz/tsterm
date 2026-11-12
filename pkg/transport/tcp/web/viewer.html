@@ -6,7 +6,7 @@
 <title>{{with .Name}}{{.}}{{else}}{{.ID}}{{end}} · tsterm</title>
 <link rel="stylesheet" href="/static/tsterm.css">
 </head>
-<body class="viewer">
+<body class="viewer" data-role="{{.Role}}" data-share-url="{{.ShareURL}}" data-shared="{{if .Shared}}1{{end}}">
 <header>
 <a href="/" class="home">← sessions</a>
 <nav id="tabs" aria-label="Recently active sessions"></nav>
@@ -14,6 +14,8 @@
 <button id="notify" type="button" hidden></button>
 <button id="mode" type="button"></button>
 <button id="closeended" type="button" hidden title="Close this ended session's tab. It's kept, in the session list.">✕ close</button>
+<button id="menu" type="button" hidden aria-haspopup="menu" aria-expanded="false" title="More">☰</button>
+<div id="menupop" role="menu" hidden></div>
 </header>
 <main class="oob"><div class="term"><div id="history" aria-label="History"></div><pre id="screen" class="screen" data-id="{{.ID}}" data-name="{{.Name}}"></pre><button id="cornerhandle" class="autofit" type="button" aria-label="Auto-fit" hidden>⇲</button></div></main>
 <nav id="extrakeys" class="mobile" aria-label="Extra keys">

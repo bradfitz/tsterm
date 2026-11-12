@@ -91,6 +91,10 @@ type meta struct {
 	// the set, which orders the tabs; zero means when it was created.
 	Closed bool      `json:"closed,omitzero"`
 	Opened time.Time `json:"opened,omitzero"`
+
+	// Shared is set when the owner has shared the session: others
+	// reaching tstermd's sharing node may look at it, read-only.
+	Shared bool `json:"shared,omitzero"`
 }
 
 // Client identifies a hot-path client attached to a session.
@@ -372,6 +376,31 @@ func (s *Session) Closed() (closed bool, opened time.Time) {
 		opened = s.meta.Created
 	}
 	return s.meta.Closed, opened
+}
+
+// Shared reports whether the owner has shared the session (see meta).
+func (s *Session) Shared() bool {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	return s.meta.Shared
+}
+
+// setShared shares the session, or stops sharing it. Its watchers are
+// told, so that those it's no longer shared with can be let go.
+func (s *Session) setShared(shared bool) error {
+	s.metaMu.Lock()
+	if s.meta.Shared == shared {
+		s.metaMu.Unlock()
+		return nil
+	}
+	s.meta.Shared = shared
+	err := s.conn.SetMeta(encodeMeta(s.meta))
+	s.metaMu.Unlock()
+	if err == nil && s.Active() {
+		s.saveInfo(time.Time{}, "")
+	}
+	s.notifyWatchers()
+	return err
 }
 
 // setClosed moves the session out of the user's open set, or into it.

@@ -28,10 +28,20 @@ import (
 // import graph. It receives requests routed to /v1/sessions/{id}/ws after
 // the auth middleware has already run.
 type Server struct {
-	Manager   *session.Manager
-	Auth      *auth.SelfUser
+	Manager *session.Manager
+
+	// Auth decides what each request's peer may do: the owner,
+	// everything; a viewer, on the sharing node, look at the sessions
+	// the owner shares, read-only (see auth.Access).
+	Auth      auth.Authorizer
 	UDPPort   int
 	WSHandler http.Handler
+
+	// ShareURL, if non-nil, returns the web UI's URL on tstermd's sharing
+	// node, which the owner's pages offer to share sessions on. With
+	// none, or while it returns "" (as before the node is up), there's
+	// no sharing, and they don't.
+	ShareURL func() string
 
 	// TLS, if non-nil, configures HTTPS, served on the same port as
 	// cleartext HTTP (see Serve).
@@ -53,14 +63,43 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /s/{id}", s.viewer)
 	mux.Handle("GET /static/", http.FileServerFS(webRoot))
 	mux.HandleFunc("GET /v1/sessions", s.list)
-	mux.HandleFunc("POST /v1/sessions", s.create)
-	mux.HandleFunc("GET /v1/sessions/{id}", s.info)
-	mux.HandleFunc("DELETE /v1/sessions/{id}", s.kill)
-	mux.HandleFunc("PATCH /v1/sessions/{id}", s.update)
+	// Only the owner may change sessions, or get one's info, which has
+	// the token for attaching to it.
+	mux.HandleFunc("POST /v1/sessions", ownerOnly(s.create))
+	mux.HandleFunc("GET /v1/sessions/{id}", ownerOnly(s.info))
+	mux.HandleFunc("DELETE /v1/sessions/{id}", ownerOnly(s.kill))
+	mux.HandleFunc("PATCH /v1/sessions/{id}", ownerOnly(s.update))
 	if s.WSHandler != nil {
-		mux.Handle("GET /v1/sessions/{id}/ws", s.WSHandler)
+		mux.Handle("GET /v1/sessions/{id}/ws", s.WSHandler) // which checks what peers may do
 	}
-	return s.redirectToHTTPS(s.Auth.HTTPMiddleware(mux))
+	return s.redirectToHTTPS(auth.Middleware(s.Auth, mux))
+}
+
+// ownerOnly wraps h to refuse any peer but the owner.
+func ownerOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if auth.PeerFrom(r.Context()).Access != auth.Owner {
+			writeError(w, r, http.StatusForbidden, "forbidden", "only the owner may do that")
+			return
+		}
+		h(w, r)
+	}
+}
+
+// visible reports whether the peer of a request with ctx may see the
+// session id: the owner sees all, a viewer those shared.
+func (s *Server) visible(ctx context.Context, id string) bool {
+	switch auth.PeerFrom(ctx).Access {
+	case auth.Owner:
+		return true
+	case auth.Viewer:
+		if sess, err := s.Manager.Resolve(id); err == nil {
+			return sess.Shared()
+		}
+		f := s.Manager.Frozen(id)
+		return f != nil && f.Shared
+	}
+	return false
 }
 
 // isWebPage reports whether path is one of the web UI's pages or assets,
@@ -86,6 +125,14 @@ func (s *Server) redirectToHTTPS(h http.Handler) http.Handler {
 		// Temporary, in case HTTPS is later turned off for the tailnet.
 		http.Redirect(w, r, u.String(), http.StatusFound)
 	})
+}
+
+// shareURL returns s.ShareURL's, if any.
+func (s *Server) shareURL() string {
+	if s.ShareURL == nil {
+		return ""
+	}
+	return s.ShareURL()
 }
 
 // Serve runs the control plane on ln until ctx is canceled. If s.TLS is
@@ -114,6 +161,9 @@ func Serve(ctx context.Context, ln net.Listener, s *Server) error {
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	summaries := s.Manager.List() // by creation time
+	if auth.PeerFrom(r.Context()).Access != auth.Owner {
+		summaries = slices.DeleteFunc(summaries, func(sm session.Summary) bool { return !sm.Shared })
+	}
 	switch sortBy := r.URL.Query().Get("sort"); sortBy {
 	case "", "created":
 	case "activity":
@@ -147,6 +197,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 			Cmd:          sm.Cmd,
 			Closed:       sm.Closed,
 			Opened:       sm.Opened,
+			Shared:       sm.Shared,
 		})
 	}
 	writeResponse(w, r, http.StatusOK, wire)
@@ -216,14 +267,21 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "decode", err.Error())
 		return
 	}
-	if req.Closed != nil {
+	if req.Closed != nil || req.Shared != nil {
 		// Live or ended.
-		switch err := s.Manager.SetClosed(r.PathValue("id"), *req.Closed); {
+		var err error
+		if req.Closed != nil {
+			err = s.Manager.SetClosed(r.PathValue("id"), *req.Closed)
+		}
+		if err == nil && req.Shared != nil {
+			err = s.Manager.SetShared(r.PathValue("id"), *req.Shared)
+		}
+		switch {
 		case errors.Is(err, session.ErrNotFound):
 			writeError(w, r, http.StatusNotFound, "not_found", err.Error())
 			return
 		case err != nil:
-			writeError(w, r, http.StatusInternalServerError, "close", err.Error())
+			writeError(w, r, http.StatusInternalServerError, "update", err.Error())
 			return
 		}
 		if req.Name == nil {

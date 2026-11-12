@@ -95,6 +95,10 @@ type runFlags struct {
 	runDir      *string
 	sessionsDir *string
 	shimLaunch  *string
+
+	shareHostname *string
+	shareTags     *string
+	shareStateDir *string
 }
 
 func newRunFlags(name string) *runFlags {
@@ -110,6 +114,10 @@ func newRunFlags(name string) *runFlags {
 		runDir:      fs.String("run-dir", defaultRunDir(), "directory for the shims' unix sockets"),
 		sessionsDir: fs.String("sessions-dir", defaultSessionsDir(), "directory for sessions' lasting state, such as their history"),
 		shimLaunch:  fs.String("shim-launch", "auto", `how to start shims: "systemd" (each in its own transient unit), "direct", "inprocess" (sessions die with tstermd), or "auto" (systemd when running under systemd, else direct)`),
+
+		shareHostname: fs.String("share-hostname", "", "if set, the hostname of a second, embedded (tsnet) Tailscale node, on which to share sessions, read-only, with other people (see -share-tags)"),
+		shareTags:     fs.String("share-tags", "", `comma-separated tags for the sharing node to advertise, as "tag:foo", so that others can reach it`),
+		shareStateDir: fs.String("share-state-dir", "", "the sharing node's state directory (default: the -sessions-dir, plus \"-share-node\")"),
 	}
 }
 
@@ -170,6 +178,12 @@ func run(args []string) {
 	// Name unnamed sessions for what they run, as their git worktrees.
 	go mgr.AutoName(ctx)
 
+	shareURL, closeShare, err := startSharing(ctx, f, mgr, a)
+	if err != nil {
+		log.Fatalf("tstermd: %v", err)
+	}
+	defer closeShare()
+
 	wsSrv := &ws.Server{
 		Manager: mgr,
 		Auth:    a,
@@ -180,6 +194,7 @@ func run(args []string) {
 		Auth:      a,
 		UDPPort:   *udpPort,
 		WSHandler: wsSrv.Handler(),
+		ShareURL:  shareURL,
 	}
 	if fqdn, ok := httpsName(ctx, lc); ok {
 		tcpSrv.TLS = tlsConfig(lc, fqdn)
