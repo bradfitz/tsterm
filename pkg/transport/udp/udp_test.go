@@ -449,7 +449,10 @@ func TestRetransmitBacksOffThenGivesUp(t *testing.T) {
 			times = append(times, time.Since(start))
 		}
 	}
-	if len(times) < 4 {
+	// Backoff waits between half and one and a half of a doubling base,
+	// starting at 200ms, so at worst the waits are 300, 600, and 1200ms:
+	// three sends in giveUp.
+	if len(times) < 3 {
 		t.Fatalf("only %d transmissions before giving up", len(times))
 	}
 	last := times[len(times)-1]

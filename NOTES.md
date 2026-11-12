@@ -90,7 +90,11 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   `libghostty-vt.a` for wasm32, links our glue (`glue/tsterm.c`) into
   `ghosttyvt.wasm` (~890 KB; reproducible), and generates `version.go`. The
   glue's contract with `pkg/vt/ghostty.go` (exports, imports, snapshot
-  encoding) is versioned by `TSTERM_ABI_VERSION`, checked at load. Licenses:
+  encoding) is versioned by `TSTERM_ABI_VERSION`, checked at load. To change
+  the glue: edit and rebuild it there, develop against it with a temporary
+  `replace` in go.mod, and once its commit is pushed, `go get
+  github.com/bradfitz/tsterm-prebuilt/ghosttyvt@<commit>` and drop the
+  `replace`, so that every tsterm commit builds on its own. Licenses:
   Ghostty's MIT `LICENSE`, and `THIRD_PARTY_LICENSES` for the other linked
   code (uucode, translate_c, Zig's compiler_rt). The stock wasm build can't
   be used: it has no imports and delivers effects (replies to terminal
@@ -195,10 +199,6 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   checkpoints carry the whole scrollback every 256 KB or 5s of output, and
   the shim protocol sends them as base64 JSON, so a binary frame for the
   blob may be worth it.
-
-**To do:** push tsterm-prebuilt's commits (through cd831cb, ABI 3), then run
-`go get github.com/bradfitz/tsterm-prebuilt/ghosttyvt@main` and remove the
-`replace` directive from go.mod.
 
 ## Upcoming work
 
