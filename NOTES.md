@@ -157,6 +157,18 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   shows the next tab's session, right or else left. A viewer of a
   session that ends keeps its connection, for history. The manager keeps
   the newest 100 frozen sessions, within 2 GB.
+- **Floods stay interruptible.** As with Mosh, a program spraying output
+  (`yes`, `find /`) can't bury a Ctrl-C. The shim reads the PTY only 64 KB
+  ahead of what an attached tstermd has taken (the 16 MB limit is for when
+  none is attached), so a program faster than tstermd waits in its own
+  writes, and Ctrl-C's SIGINT (with the kernel's flush of the PTY's output)
+  takes effect at once. WebSocket Deltas come at most every 20 ms, and
+  viewers with `?acks=1` (the web UI) acknowledge each once drawn
+  (`requestAnimationFrame`), with at most 2 unacknowledged; background tabs,
+  which don't draw, get one a second. The web viewer skips to the newest
+  history when far behind and keeps 5000 lines while following. Measured
+  (Ctrl-C to prompt): `yes` 2.9 s → 40 ms; `find /` with a viewer taking
+  100 ms a frame 11.5 s → 0.4 s; in headless Chromium, 37-75 ms.
 - **Performance.** Writes: 132 MB/s (charm: 15). Snapshot of 200×60:
   1.4 ms (charm: 0.7); fix by snapshotting only dirty rows (the render state
   tracks them). Each terminal: ~2 MB of wasm memory at start (1 MB is the

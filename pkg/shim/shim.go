@@ -44,6 +44,14 @@ const drainTimeout = 500 * time.Millisecond
 // outputChunk bounds the size of an Output frame.
 const outputChunk = 64 << 10
 
+// attachedWindow bounds the output the shim reads ahead of what it has
+// sent the controller: while one is attached, a program that writes faster
+// than the controller can keep up waits in its own writes, rather than
+// piling output up here. Otherwise, after Ctrl-C, its interrupted output
+// would still take as long to show as the pile does to process. With no
+// controller, output piles up to BufferLimit, for one to come.
+const attachedWindow = 64 << 10
+
 // Run runs a shim: it listens on cfg.Socket, starts cfg's command under a
 // new PTY, and serves controllers until the child has exited and a
 // controller has released it, or until ctx is done, in which case the child
@@ -158,7 +166,7 @@ func (s *server) readPTY() {
 	b := make([]byte, 32<<10)
 	for {
 		s.mu.Lock()
-		for len(s.buf) >= s.opts.BufferLimit && !s.exited && !s.done {
+		for (len(s.buf) >= s.opts.BufferLimit || s.ctrl != nil && s.end()-s.ctrl.sent >= attachedWindow) && !s.exited && !s.done {
 			s.cond.Wait()
 		}
 		s.mu.Unlock()
@@ -350,6 +358,7 @@ func (s *server) stream(c *conn) {
 			n := min(uint64(len(s.buf))-start, outputChunk)
 			typ, payload = shimproto.TypeOutput, append([]byte(nil), s.buf[start:start+n]...)
 			c.sent += n
+			s.cond.Broadcast() // the reader may have room in the window now
 		} else {
 			typ, exitSent = shimproto.TypeExited, true
 			payload, _ = json.Marshal(shimproto.Exited{Status: s.exitStatus})

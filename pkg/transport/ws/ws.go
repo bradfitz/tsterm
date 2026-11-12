@@ -14,6 +14,14 @@
 // frame to say whether that's this one. Other connections are view-only,
 // but any may send {"history": {"from": N, "count": K}} to get up to K
 // lines of history from line N in a History frame,
+//
+// Deltas come at most every minFrameInterval, each describing all the
+// changes since the last. A viewer that connects with ?acks=1 also
+// acknowledges each Delta it has shown, with {"ack": Seq}, and the server
+// keeps no more than maxInFlight unacknowledged, as Mosh does: a viewer
+// that can't keep up gets fewer, fresher frames, rather than a backlog of
+// stale ones, which would delay everything after them, such as the result
+// of a Ctrl-C.
 // and their inbound frames are ignored. (Today only the session's owner can
 // connect at all; view-only connections are what links shared with others
 // will get.)
@@ -25,6 +33,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -96,6 +106,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	// connection, and otherwise just so that a browser closing the
 	// connection is noticed promptly.
 	writable := r.URL.Query().Get("write") == "1"
+	fl := &flow{enabled: r.URL.Query().Get("acks") == "1", acked: make(chan struct{}, 1)}
 	sizer := sess.NewSizer("a browser")
 	defer sizer.Close()
 	go func() {
@@ -108,7 +119,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			if typ != websocket.MessageText {
 				continue
 			}
-			if err := s.handleMessage(ctx, conn, sess, sizer, writable, b); err != nil {
+			if err := s.handleMessage(ctx, conn, sess, sizer, fl, writable, b); err != nil {
 				s.Logf("ws: message from %s: %v", r.RemoteAddr, err)
 			}
 		}
@@ -121,14 +132,47 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.Logf("ws: recording attach: %v", err)
 	}
 
-	if err := s.pump(ctx, conn, sess, sizer, writable); err != nil && !errors.Is(err, context.Canceled) {
+	if err := s.pump(ctx, conn, sess, sizer, fl, writable); err != nil && !errors.Is(err, context.Canceled) {
 		s.Logf("ws: pump: %v", err)
 	}
 	conn.Close(websocket.StatusNormalClosure, "session ended")
 }
 
+// Flow control of Deltas; see the package comment.
+const (
+	minFrameInterval = 20 * time.Millisecond
+	maxInFlight      = 2
+
+	// maxAckWait is how long the server waits for an acknowledgment
+	// before sending anyway, at that rate, as to a background tab that
+	// doesn't draw.
+	maxAckWait = time.Second
+)
+
+// flow is a viewer's acknowledgments of Deltas.
+type flow struct {
+	enabled bool
+	ack     atomic.Uint64 // the latest Seq acknowledged
+	acked   chan struct{} // ticks when ack changes
+}
+
+func (f *flow) gotAck(seq uint64) {
+	for {
+		old := f.ack.Load()
+		if seq <= old || f.ack.CompareAndSwap(old, seq) {
+			break
+		}
+	}
+	select {
+	case f.acked <- struct{}{}:
+	default:
+	}
+}
+
 // inputMsg is a frame from a viewer.
 type inputMsg struct {
+	Ack uint64 `json:"ack,omitzero"`
+
 	History *struct {
 		From  uint64 `json:"from"`
 		Count int    `json:"count"`
@@ -148,10 +192,13 @@ const maxDim = 1000
 // maxHistoryLines bounds the lines of history sent in reply to a request.
 const maxHistoryLines = 2000
 
-func (s *Server) handleMessage(ctx context.Context, conn *websocket.Conn, sess *session.Session, sizer *session.Sizer, writable bool, b []byte) error {
+func (s *Server) handleMessage(ctx context.Context, conn *websocket.Conn, sess *session.Session, sizer *session.Sizer, fl *flow, writable bool, b []byte) error {
 	var m inputMsg
 	if err := json.Unmarshal(b, &m); err != nil {
 		return err
+	}
+	if m.Ack != 0 {
+		fl.gotAck(m.Ack)
 	}
 	if h := m.History; h != nil {
 		if err := sendHistory(ctx, conn, sess.History(), h.From, h.Count); err != nil {
@@ -202,7 +249,7 @@ func (s *Server) recheck(ctx context.Context, cancel context.CancelFunc, remoteA
 	}
 }
 
-func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.Session, sizer *session.Sizer, writable bool) error {
+func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.Session, sizer *session.Sizer, fl *flow, writable bool) error {
 	w := sess.Watch(ctx)
 	defer func() { <-w.Done() }()
 
@@ -226,6 +273,13 @@ func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.S
 	if err := sendSizing(); err != nil {
 		return err
 	}
+	var (
+		seq      uint64    // of the last Delta sent
+		lastSend time.Time // when it was sent
+		dirty    bool      // the screen may have changed since
+		timer    = time.NewTimer(0)
+	)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -239,12 +293,31 @@ func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.S
 			if err := sendSizing(); err != nil {
 				return err
 			}
-			d := w.Diff()
-			if d.Changed() {
-				if err := writeEnv(ctx, conn, proto.Envelope{Delta: &proto.Delta{D: d}}); err != nil {
-					return err
-				}
-			}
+			dirty = true
+		case <-fl.acked:
+		case <-timer.C:
+		}
+		if !dirty {
+			continue
+		}
+		// Wait for the frame interval, and for the viewer to catch up.
+		wait := minFrameInterval - time.Since(lastSend)
+		if fl.enabled && seq-fl.ack.Load() >= maxInFlight {
+			wait = max(wait, maxAckWait-time.Since(lastSend))
+		}
+		if wait > 0 {
+			timer.Reset(wait)
+			continue
+		}
+		dirty = false
+		d := w.Diff()
+		if !d.Changed() {
+			continue
+		}
+		seq++
+		lastSend = time.Now()
+		if err := writeEnv(ctx, conn, proto.Envelope{Delta: &proto.Delta{Seq: seq, D: d}}); err != nil {
+			return err
 		}
 	}
 }

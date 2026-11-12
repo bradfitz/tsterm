@@ -225,7 +225,8 @@ let ws = null;
 function connect() {
   ended = "";
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const q = writable ? "?write=1" : "";
+  // With acks, the server sends Deltas only as fast as we show them.
+  const q = writable ? "?write=1&acks=1" : "?acks=1";
   const sock = ws = new WebSocket(`${proto}//${location.host}/v1/sessions/${encodeURIComponent(sessionID)}/ws${q}`);
   sock.binaryType = "arraybuffer";
   sock.onopen = () => {
@@ -239,7 +240,13 @@ function connect() {
     if (ws !== sock) return; // replaced, as by switching sessions
     const env = decodeCBOR(ev.data);
     if (env[6]) applySnapshot(env[6]["s_"]);
-    else if (env[5]) applyDelta(env[5].d);
+    else if (env[5]) {
+      applyDelta(env[5].d);
+      // Acknowledge it once it's drawn: when the browser is about to
+      // draw the next frame, which it doesn't do in background tabs.
+      const seq = env[5].s;
+      if (seq) requestAnimationFrame(() => { if (ws === sock && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ack: seq})); });
+    }
     else if (env[11]) { sizing = env[11]; showStatus(); }
     else if (env[12]) applyHistory(env[12]);
     else if (env[7]) {
@@ -313,6 +320,11 @@ function type(input) {
 // many there are, and histFirst the oldest the server still has.
 const histEl = document.getElementById("history");
 const histChunk = 500; // lines to load at a time
+// While following new lines, the viewer keeps no more than histKeep, and
+// when more than histSkip lines behind, as when a program floods the
+// screen with output, it skips to the newest: older ones load when
+// scrolled to.
+const histKeep = 5000, histSkip = 3000;
 let histFrom = 0, histTo = 0, histTotal = 0, histFirst = 0;
 let histStarted = false; // whether histFrom and histTo are set
 let histWant = null; // the request in flight: "newer" or "older"
@@ -354,6 +366,10 @@ function loadHistory() {
   if (histWant || !ws || ws.readyState !== WebSocket.OPEN) return;
   let from, to;
   if (histTo < histTotal) {
+    if (pinned && histTotal - histTo > histSkip) {
+      histEl.replaceChildren();
+      histFrom = histTo = histTotal - histChunk;
+    }
     histWant = "newer";
     [from, to] = [histTo, Math.min(histTotal, histTo + 2000)];
   } else if (histFrom > histFirst && nearTop() && !modes.a) {
@@ -380,7 +396,13 @@ function applyHistory(h) {
     }
     histEl.append(...lines);
     histTo = from + lines.length;
-    if (follow) scrollToBottom();
+    if (follow) {
+      for (let n = histEl.childElementCount - histKeep; n > 0; n--) {
+        histEl.firstChild.remove();
+        histFrom++;
+      }
+      scrollToBottom();
+    }
   } else if (want === "older") {
     // Keep what's in view in place.
     const height = areaEl.scrollHeight;
