@@ -23,8 +23,10 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -34,6 +36,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bradfitz/tsterm/pkg/history"
 	"github.com/bradfitz/tsterm/pkg/pty"
 	"github.com/bradfitz/tsterm/pkg/shim"
 	"github.com/bradfitz/tsterm/pkg/vt"
@@ -110,6 +113,11 @@ type Session struct {
 	replayEnd  uint64 // output up to this offset predates attaching
 	term       vt.Terminal
 
+	// hist, if non-nil, stores the lines that scroll off term's screen.
+	// histMu orders taking them from term and adding them to hist.
+	histMu sync.Mutex
+	hist   *history.Store
+
 	done     chan struct{}
 	pumpDone chan struct{} // closed when the pump returns
 
@@ -145,20 +153,39 @@ type Session struct {
 // says whether the shim had a previous controller, a previous tstermd, in
 // which case output already produced was seen, and its queries answered,
 // by that tstermd.
-func attach(conn *shim.Conn, id ID, m meta, restored bool) (*Session, error) {
+//
+// If histDir isn't empty, the session's history is stored there.
+func attach(conn *shim.Conn, id ID, m meta, restored bool, histDir string) (*Session, error) {
 	ckpt, err := conn.Attach()
 	if err != nil {
 		return nil, err
 	}
 	rows, cols := max(conn.Info.Rows, 1), max(conn.Info.Cols, 1)
+	blob, histLines, hasHistLines := decodeCheckpoint(ckpt.Blob)
 	var term vt.Terminal
-	if len(ckpt.Blob) > 0 {
-		term, err = vt.Restore(ckpt.Blob, rows, cols)
+	if len(blob) > 0 {
+		term, err = vt.Restore(blob, rows, cols)
 	} else {
 		term, err = vt.New(rows, cols)
 	}
 	if err != nil {
 		return nil, err
+	}
+	var hist *history.Store
+	if histDir != "" {
+		if hist, err = history.Open(histDir, 0); err != nil {
+			term.Close()
+			return nil, err
+		}
+		// Replaying the output since the checkpoint will add the lines
+		// stored since then again.
+		if hasHistLines && hist.Next() > histLines {
+			if err := hist.Truncate(histLines); err != nil {
+				hist.Close()
+				term.Close()
+				return nil, err
+			}
+		}
 	}
 	s := &Session{
 		id:         id,
@@ -170,6 +197,7 @@ func attach(conn *shim.Conn, id ID, m meta, restored bool) (*Session, error) {
 		lastOutput: conn.Info.LastOutput,
 		replayEnd:  replayEnd(conn, restored),
 		term:       term,
+		hist:       hist,
 		done:       make(chan struct{}),
 		pumpDone:   make(chan struct{}),
 		watchers:   map[uint64]*Watcher{},
@@ -179,6 +207,26 @@ func attach(conn *shim.Conn, id ID, m meta, restored bool) (*Session, error) {
 	s.ckptOffset.Store(ckpt.Offset)
 	go s.pump()
 	return s, nil
+}
+
+// The session's checkpoint, which the shim keeps, is sessionCkptMagic, the
+// number of history lines stored (a u64, little endian), then the
+// terminal's checkpoint. Older ones are just the terminal's.
+const sessionCkptMagic = "tsss\x01"
+
+func encodeCheckpoint(term []byte, histLines uint64) []byte {
+	b := make([]byte, 0, len(sessionCkptMagic)+8+len(term))
+	b = append(b, sessionCkptMagic...)
+	b = binary.LittleEndian.AppendUint64(b, histLines)
+	return append(b, term...)
+}
+
+func decodeCheckpoint(b []byte) (term []byte, histLines uint64, ok bool) {
+	rest, ok := bytes.CutPrefix(b, []byte(sessionCkptMagic))
+	if !ok || len(rest) < 8 {
+		return b, 0, false
+	}
+	return rest[8:], binary.LittleEndian.Uint64(rest), true
 }
 
 // replayEnd returns the output offset up to which attaching replays output
@@ -303,7 +351,43 @@ func (s *Session) WatchersCount() int {
 func (s *Session) Active() bool { return !s.closed.Load() }
 
 // Snapshot returns the current canonical Screen.
-func (s *Session) Snapshot() vt.Screen { return s.term.Snapshot() }
+func (s *Session) Snapshot() vt.Screen {
+	scr := s.term.Snapshot()
+	if s.hist != nil {
+		scr.History = s.hist.Next()
+	}
+	return scr
+}
+
+// History returns the session's history, or nil if it isn't kept.
+func (s *Session) History() *history.Store { return s.hist }
+
+// takeHistory moves the lines that have scrolled off the terminal's screen
+// to the session's history.
+func (s *Session) takeHistory() {
+	s.histMu.Lock()
+	defer s.histMu.Unlock()
+	s.takeHistoryLocked()
+}
+
+func (s *Session) takeHistoryLocked() {
+	lines, lost := s.term.TakeHistory()
+	if s.hist == nil || len(lines) == 0 && !lost {
+		return
+	}
+	if lost {
+		// The terminal's scrollback overflowed before these lines
+		// could be read. Say so where they would have been.
+		lines = append([]vt.Line{lostLine}, lines...)
+	}
+	_ = s.hist.Append(lines...)
+}
+
+// lostLine stands in for lines missing from history.
+var lostLine = vt.Line{
+	Text: "[tsterm: lines missing here]",
+	Runs: []vt.Run{{Len: len("[tsterm: lines missing here]"), Style: vt.Style{Attrs: vt.AttrFaint}}},
+}
 
 // Modes returns the current terminal modes.
 func (s *Session) Modes() vt.Modes { return s.term.Modes() }
@@ -330,6 +414,7 @@ func (s *Session) Resize(rows, cols int) error {
 		return err
 	}
 	s.term.Resize(rows, cols)
+	s.takeHistory() // shrinking can scroll lines off
 	if r := s.term.Replies(); len(r) > 0 {
 		_ = s.conn.Input(r) // the size, in in-band resize mode
 	}
@@ -478,7 +563,11 @@ func (s *Session) Detach() {
 		}
 	}
 	s.conn.Close()
+	s.takeHistory()
 	s.term.Close()
+	if s.hist != nil {
+		_ = s.hist.Close()
+	}
 }
 
 // pump runs in a dedicated goroutine. It copies output from the shim into
@@ -506,6 +595,7 @@ func (s *Session) pump() {
 			return
 		}
 		_, _ = s.term.Write(out)
+		s.takeHistory()
 		s.notifyWatchers()
 		replies := s.term.Replies()
 		if offset := s.offset.Add(uint64(len(out))); offset > s.replayEnd {
@@ -537,11 +627,22 @@ func (s *Session) maybeCheckpoint() {
 		return
 	}
 	// Only the pump writes to the terminal, so the checkpoint
-	// corresponds exactly to offset.
-	ckpt, err := s.term.Checkpoint()
+	// corresponds exactly to offset. Under histMu, the history stored
+	// corresponds exactly to the lines the checkpoint says the terminal
+	// has returned.
+	s.histMu.Lock()
+	s.takeHistoryLocked()
+	term, err := s.term.Checkpoint()
+	var histLines uint64
+	if s.hist != nil {
+		histLines = s.hist.Next()
+		_ = s.hist.Flush()
+	}
+	s.histMu.Unlock()
 	if err != nil {
 		return
 	}
+	ckpt := encodeCheckpoint(term, histLines)
 	if err := s.conn.SetCheckpoint(offset, ckpt); err != nil {
 		return // the next Read will report the broken connection
 	}
@@ -556,7 +657,11 @@ func (s *Session) shutdown(waitErr error) {
 		return
 	}
 	s.waitErr = waitErr
+	s.takeHistory()
 	s.term.Close()
+	if s.hist != nil {
+		_ = s.hist.Close()
+	}
 	close(s.done)
 
 	s.mu.Lock()

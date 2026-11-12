@@ -12,6 +12,8 @@
 // user focuses its window; typing does too. Only the client the user used
 // last sets the size (see session.Sizer), and the server sends a Sizing
 // frame to say whether that's this one. Other connections are view-only,
+// but any may send {"history": {"from": N, "count": K}} to get up to K
+// lines of history from line N in a History frame,
 // and their inbound frames are ignored. (Today only the session's owner can
 // connect at all; view-only connections are what links shared with others
 // will get.)
@@ -92,10 +94,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-			if writable && typ == websocket.MessageText {
-				if err := s.handleInput(sess, sizer, b); err != nil {
-					s.Logf("ws: input from %s: %v", r.RemoteAddr, err)
-				}
+			if typ != websocket.MessageText {
+				continue
+			}
+			if err := s.handleMessage(ctx, conn, sess, sizer, writable, b); err != nil {
+				s.Logf("ws: message from %s: %v", r.RemoteAddr, err)
 			}
 		}
 	}()
@@ -113,8 +116,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	conn.Close(websocket.StatusNormalClosure, "session ended")
 }
 
-// inputMsg is a frame from a writable connection.
+// inputMsg is a frame from a viewer.
 type inputMsg struct {
+	History *struct {
+		From  uint64 `json:"from"`
+		Count int    `json:"count"`
+	} `json:"history,omitzero"`
+
 	Input  string `json:"input,omitzero"`
 	Resize *struct {
 		Rows int `json:"rows"`
@@ -126,10 +134,21 @@ type inputMsg struct {
 // maxDim bounds a requested terminal dimension.
 const maxDim = 1000
 
-func (s *Server) handleInput(sess *session.Session, sizer *session.Sizer, b []byte) error {
+// maxHistoryLines bounds the lines of history sent in reply to a request.
+const maxHistoryLines = 2000
+
+func (s *Server) handleMessage(ctx context.Context, conn *websocket.Conn, sess *session.Session, sizer *session.Sizer, writable bool, b []byte) error {
 	var m inputMsg
 	if err := json.Unmarshal(b, &m); err != nil {
 		return err
+	}
+	if h := m.History; h != nil {
+		if err := sendHistory(ctx, conn, sess, h.From, h.Count); err != nil {
+			return err
+		}
+	}
+	if !writable {
+		return nil
 	}
 	// Record the wanted size before taking the lead, which applies it.
 	if rs := m.Resize; rs != nil {
@@ -217,6 +236,19 @@ func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.S
 			}
 		}
 	}
+}
+
+// sendHistory sends up to count lines of sess's history from line from.
+func sendHistory(ctx context.Context, conn *websocket.Conn, sess *session.Session, from uint64, count int) error {
+	reply := &proto.History{From: from}
+	if h := sess.History(); h != nil {
+		first, lines, err := h.Read(from, min(max(count, 0), maxHistoryLines))
+		if err != nil {
+			return err
+		}
+		reply.First, reply.From, reply.Lines = h.First(), first, lines
+	}
+	return writeEnv(ctx, conn, proto.Envelope{History: reply})
 }
 
 func writeEnv(ctx context.Context, conn *websocket.Conn, env proto.Envelope) error {

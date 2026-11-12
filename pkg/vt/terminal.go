@@ -115,6 +115,11 @@ type Screen struct {
 	// Notification is the latest desktop notification the program asked
 	// for, if any.
 	Notification Notification `cbor:"n,omitempty"`
+
+	// History is how many lines of history there are: the number the
+	// next line to scroll off the screen will have. A Terminal doesn't
+	// number lines; whatever stores its history does (see TakeHistory).
+	History uint64 `cbor:"h,omitempty"`
 }
 
 // Notification is a program's request for a desktop notification (OSC 9 or
@@ -135,7 +140,7 @@ func validUTF8(s string) string { return strings.ToValidUTF8(s, "\uFFFD") }
 func (s Screen) Equal(o Screen) bool {
 	if s.Rows != o.Rows || s.Cols != o.Cols || s.Cursor != o.Cursor ||
 		s.Title != o.Title || s.BellSeq != o.BellSeq || s.Modes != o.Modes ||
-		s.Notification != o.Notification ||
+		s.Notification != o.Notification || s.History != o.History ||
 		len(s.Cells) != len(o.Cells) {
 		return false
 	}

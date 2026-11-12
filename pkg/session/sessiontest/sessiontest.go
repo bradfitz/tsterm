@@ -3,6 +3,7 @@ package sessiontest
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/bradfitz/tsterm/pkg/session"
@@ -10,7 +11,7 @@ import (
 )
 
 // NewManager returns a session.Manager whose shims run in-process, in a
-// fresh temporary directory. Every session is killed when the test ends.
+// fresh temporary directory, which also holds their state, such as history. Every session is killed when the test ends.
 func NewManager(tb testing.TB) *session.Manager {
 	tb.Helper()
 	// Not tb.TempDir: its long paths can exceed the unix socket path limit.
@@ -20,6 +21,7 @@ func NewManager(tb testing.TB) *session.Manager {
 	}
 	l := &shim.InProcess{}
 	m := session.NewManager(dir, l)
+	m.SetStateDir(filepath.Join(dir, "state"))
 	tb.Cleanup(func() {
 		m.Close()
 		l.Close()

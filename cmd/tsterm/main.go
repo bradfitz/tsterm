@@ -29,9 +29,9 @@ import (
 )
 
 var (
-	flagList = flag.Bool("list", false, "list sessions on HOST and exit")
-	flagNew  = flag.Bool("new", false, "create a new session (and attach unless -no-attach)")
-	flagKill = flag.Bool("kill", false, "kill the named session and exit")
+	flagList     = flag.Bool("list", false, "list sessions on HOST and exit")
+	flagNew      = flag.Bool("new", false, "create a new session (and attach unless -no-attach)")
+	flagKill     = flag.Bool("kill", false, "kill the named session and exit")
 	flagNoAttach = flag.Bool("no-attach", false, "do not attach after -new")
 )
 

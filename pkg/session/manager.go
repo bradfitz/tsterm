@@ -74,6 +74,7 @@ type Manager struct {
 	launcher shim.Launcher
 	logf     func(format string, args ...any)
 	demo     func() pty.Config
+	stateDir string
 
 	mu     sync.Mutex
 	byID   map[ID]*Session
@@ -90,6 +91,19 @@ func NewManager(dir string, launcher shim.Launcher) *Manager {
 		byID:     map[ID]*Session{},
 		byName:   map[string]ID{},
 	}
+}
+
+// SetStateDir sets the directory where sessions keep state that outlives
+// them, such as their history: dir/<id>. Without one, sessions keep no
+// history.
+func (m *Manager) SetStateDir(dir string) { m.stateDir = dir }
+
+// historyDir returns where the session id stores its history, or "".
+func (m *Manager) historyDir(id ID) string {
+	if m.stateDir == "" {
+		return ""
+	}
+	return filepath.Join(m.stateDir, string(id), "history")
 }
 
 // SetDemo sets the program that sessions created with DemoName run.
@@ -163,7 +177,7 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: connecting to new shim: %w", err)
 	}
-	s, err := attach(conn, id, md, false)
+	s, err := attach(conn, id, md, false, m.historyDir(id))
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -257,7 +271,7 @@ func (m *Manager) restore(ctx context.Context, sock string) error {
 		conn.Close()
 		return fmt.Errorf("bad metadata: %w", err)
 	}
-	s, err := attach(conn, ID(conn.Info.ID), md, true)
+	s, err := attach(conn, ID(conn.Info.ID), md, true, m.historyDir(ID(conn.Info.ID)))
 	if err != nil {
 		conn.Close()
 		return err

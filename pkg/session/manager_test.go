@@ -150,6 +150,7 @@ func TestRestoreAfterDetach(t *testing.T) {
 	// tstermd shuts down, leaving the shim running, and a new one starts.
 	m.Detach()
 	m2 := NewManager(m.dir, l)
+	m2.SetStateDir(m.stateDir)
 	t.Cleanup(func() { m2.Close() })
 	n, err := m2.Restore(context.Background())
 	if err != nil || n != 1 {
@@ -187,6 +188,7 @@ func TestRestoreUsesCheckpoint(t *testing.T) {
 	m.Detach()
 
 	m2 := NewManager(m.dir, l)
+	m2.SetStateDir(m.stateDir)
 	t.Cleanup(func() { m2.Close() })
 	if n, err := m2.Restore(context.Background()); err != nil || n != 1 {
 		t.Fatalf("Restore = %d, %v", n, err)
@@ -210,6 +212,7 @@ func TestRestoreReleasesExited(t *testing.T) {
 	m.Detach()
 	time.Sleep(time.Second) // the child exits while no Manager is attached
 	m2 := NewManager(m.dir, l)
+	m2.SetStateDir(m.stateDir)
 	t.Cleanup(func() { m2.Close() })
 	if n, _ := m2.Restore(context.Background()); n != 0 {
 		t.Errorf("restored %d sessions, want 0", n)
@@ -247,6 +250,7 @@ func TestActivityTimes(t *testing.T) {
 	m.Detach()
 	time.Sleep(100 * time.Millisecond)
 	m2 := NewManager(m.dir, l)
+	m2.SetStateDir(m.stateDir)
 	t.Cleanup(func() { m2.Close() })
 	if _, err := m2.Restore(context.Background()); err != nil {
 		t.Fatal(err)
@@ -286,6 +290,7 @@ func TestRenameSurvivesRestore(t *testing.T) {
 	}
 	m.Detach()
 	m2 := NewManager(m.dir, l)
+	m2.SetStateDir(m.stateDir)
 	t.Cleanup(func() { m2.Close() })
 	if _, err := m2.Restore(context.Background()); err != nil {
 		t.Fatal(err)

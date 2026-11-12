@@ -58,6 +58,7 @@ func main() {
 	udpPort := flag.Int("udp-port", 2201, "hot-path UDP port")
 	bindAll := flag.Bool("bind-all", false, "bind on all interfaces (default: tailnet addresses only)")
 	runDir := flag.String("run-dir", defaultRunDir(), "directory for the shims' unix sockets")
+	sessionsDir := flag.String("sessions-dir", defaultSessionsDir(), "directory for sessions' lasting state, such as their history")
 	shimPath := flag.String("shim", defaultShimPath(), "path to the tsterm-shim binary")
 	shimLaunch := flag.String("shim-launch", "auto", `how to start shims: "systemd" (each in its own transient unit), "direct", "inprocess" (sessions die with tstermd), or "auto" (systemd when running under systemd, else direct)`)
 	flag.Parse()
@@ -90,6 +91,7 @@ func main() {
 
 	mgr := session.NewManager(*runDir, launcher)
 	mgr.SetLogf(log.Printf)
+	mgr.SetStateDir(*sessionsDir)
 	mgr.SetDemo(func() pty.Config {
 		cmd, env := demoapp.Command()
 		return pty.Config{Command: cmd, Env: env}
@@ -304,6 +306,22 @@ func defaultStateDir() string {
 		return "tsterm-state"
 	}
 	return filepath.Join(home, ".tsterm", "state")
+}
+
+// defaultSessionsDir returns where sessions' lasting state goes by
+// default: under $XDG_STATE_HOME (~/.local/state), or /var/lib for root.
+// Unlike $XDG_RUNTIME_DIR, it survives a reboot.
+func defaultSessionsDir() string {
+	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+		return filepath.Join(d, "tsterm", "sessions")
+	}
+	if os.Getuid() == 0 {
+		return "/var/lib/tsterm/sessions"
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "state", "tsterm", "sessions")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("tsterm-%d-sessions", os.Getuid()))
 }
 
 // defaultRunDir returns where shim sockets go by default: under

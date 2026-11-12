@@ -5,6 +5,7 @@ package session
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ func newTestManager(t *testing.T) (*Manager, *shim.InProcess) {
 	}
 	l := &shim.InProcess{}
 	m := NewManager(dir, l)
+	m.SetStateDir(filepath.Join(dir, "state"))
 	t.Cleanup(func() {
 		m.Close()
 		l.Close()

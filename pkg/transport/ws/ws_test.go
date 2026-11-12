@@ -307,3 +307,39 @@ func TestBellAndNotificationAlone(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryRequest(t *testing.T) {
+	srv, hts := mountTestServer(t)
+	sess, err := srv.Manager.Create(session.Config{
+		PTY:  pty.Config{Command: "/bin/sh", Args: []string{"-c", "i=0; while [ $i -lt 100 ]; do echo hist-$i; i=$((i+1)); done; sleep 30"}},
+		Rows: 10, Cols: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !screenHas(sess, "hist-99", 5*time.Second) {
+		t.Fatal("output didn't arrive")
+	}
+	// A view-only viewer may read history.
+	conn, ctx, cancel := dialWS(t, "ws://"+hts.Listener.Addr().String()+"/v1/sessions/"+string(sess.ID())+"/ws")
+	defer cancel()
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	snap := readEnv(t, conn, ctx).Snapshot
+	if snap == nil || snap.S.History < 90 {
+		t.Fatalf("snapshot's History = %+v", snap)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"history":{"from":10,"count":5}}`)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		env := readEnv(t, conn, ctx)
+		if env.History == nil {
+			continue
+		}
+		h := env.History
+		if h.First != 0 || h.From != 10 || len(h.Lines) != 5 || h.Lines[0].Text != "hist-10" || h.Lines[4].Text != "hist-14" {
+			t.Errorf("History = %+v", h)
+		}
+		return
+	}
+}

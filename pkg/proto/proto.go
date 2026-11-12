@@ -40,6 +40,7 @@ type Envelope struct {
 	StateAck *StateAck `cbor:"9,keyasint,omitempty"`
 	Detach   *Detach   `cbor:"10,keyasint,omitempty"`
 	Sizing   *Sizing   `cbor:"11,keyasint,omitempty"`
+	History  *History  `cbor:"12,keyasint,omitempty"`
 }
 
 // Hello is the first packet a client sends on UDP attach. The server uses
@@ -153,6 +154,18 @@ type Ended struct {
 type Sizing struct {
 	Leader bool   `cbor:"l,omitempty"`
 	Other  string `cbor:"o,omitempty"` // describes the leader, if another client
+}
+
+// History is lines of a session's history, which a WebSocket viewer asked
+// for. Lines are numbered from 0 in the order they scrolled off the screen;
+// the screen's History field is how many there have been.
+type History struct {
+	// First is the number of the oldest line the session still has.
+	First uint64 `cbor:"o,omitempty"`
+
+	// From is the number of Lines[0].
+	From  uint64    `cbor:"f,omitempty"`
+	Lines []vt.Line `cbor:"x,omitempty"`
 }
 
 // EndedNoSession is the Ended Status the UDP server sends in reply to a

@@ -132,4 +132,3 @@ func TestControlPlaneRoundtrip(t *testing.T) {
 		t.Errorf("SessionInfo roundtrip: got %+v want %+v", info2, info)
 	}
 }
-

@@ -70,6 +70,7 @@ func TestFullScreenAppAcrossRestart(t *testing.T) {
 	// tstermd shuts down, leaving the program running, and a new one starts.
 	m.Detach()
 	m2 := NewManager(m.dir, l)
+	m2.SetStateDir(m.stateDir)
 	t.Cleanup(func() { m2.Close() })
 	if n, err := m2.Restore(context.Background()); err != nil || n != 1 {
 		t.Fatalf("Restore = %d, %v", n, err)
