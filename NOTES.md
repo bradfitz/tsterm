@@ -252,14 +252,16 @@ encoding, palette), tested against real handlers. Not the UDP protocol yet.
   tabs, the list, ended sessions, copy and paste, auto-fit, the
   checkerboard, reconnecting, renaming, and deleting. Windows and macOS
   builds are untested at run time.
+  Closing a running session's tab flies a copy of it into Other; a
+  double-click renames the current tab; strikethrough is drawn over the
+  grid.
 - **Gaps vs. the web UI:** no audible bell (Fyne has no audio); no
-  strikethrough, overline, or curly/dotted/dashed underlines (TextGrid);
-  no emoji (Fyne's font), and a colored background can cover a wide
+  overline or curly/dotted/dashed/double underlines (TextGrid draws one
+  kind); no emoji (Fyne's font), and a colored background can cover a wide
   character's right half; no horizontal scrolling when the session is
-  wider than the window (it's clipped); no fly-into-Other animation; renaming
-  is from the list only (no double-clicking the tab); no mobile extra-keys
-  bar; IME composition untested; the auto-fit preference isn't shared with
-  browsers.
+  wider than the window (it's clipped); Other's count doesn't pulse; no
+  mobile extra-keys bar; IME composition untested; the auto-fit preference
+  isn't shared with browsers.
 
 ## Upcoming work
 

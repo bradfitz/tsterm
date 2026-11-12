@@ -54,6 +54,8 @@ type App struct {
 
 	term      *Term
 	tabs      *fyne.Container
+	tabObjs   map[string]fyne.CanvasObject // the tabs, by session
+	otherBtn  *widget.Button               // Other (N), if shown
 	tabScroll *container.Scroll
 	status    *widget.Label
 	modeBtn   *widget.Button
@@ -581,8 +583,11 @@ func (a *App) renderTabs() {
 	if !found && a.id != "" {
 		open = append(open, proto.SessionSummary{ID: a.id, Name: a.name, Active: a.st.Ended == ""})
 	}
+	a.tabObjs = map[string]fyne.CanvasObject{}
 	for _, s := range open {
-		objs = append(objs, a.tab(s))
+		o := a.tab(s)
+		a.tabObjs[s.ID] = o
+		objs = append(objs, o)
 	}
 	other := 0
 	for _, s := range a.sessions {
@@ -590,8 +595,10 @@ func (a *App) renderTabs() {
 			other++
 		}
 	}
+	a.otherBtn = nil
 	if other > 0 {
-		objs = append(objs, a.button(fmt.Sprintf("Other (%d)", other), a.showList))
+		a.otherBtn = a.button(fmt.Sprintf("Other (%d)", other), a.showList)
+		objs = append(objs, a.otherBtn)
 	}
 	add := a.button("+", func() { a.newSession("") })
 	objs = append(objs, add)
@@ -606,18 +613,14 @@ func (a *App) tab(s proto.SessionSummary) fyne.CanvasObject {
 	if !s.Active {
 		name += " (ended)"
 	}
-	b := a.button(name, func() {
-		if s.ID != a.id {
-			a.switchTo(s.ID, s.Name)
-		}
-	})
-	if s.ID == a.id {
-		b.Importance = widget.HighImportance
-	} else {
-		b.Importance = widget.LowImportance
-	}
 	x := a.button("×", func() { a.closeTab(s.ID) })
 	x.Importance = widget.LowImportance
+	if s.ID == a.id {
+		cur := newCurrentTab(name, func() { a.rename(s.ID, a.name) })
+		return container.NewHBox(cur, x)
+	}
+	b := a.button(name, func() { a.switchTo(s.ID, s.Name) })
+	b.Importance = widget.LowImportance
 	return container.NewHBox(b, x)
 }
 
@@ -643,20 +646,82 @@ func (a *App) closeTab(id string) {
 		}
 		a.refreshSessions()
 	}()
+	alive := false
 	for i := range a.sessions {
 		if a.sessions[i].ID == id {
 			a.sessions[i].Closed = true
+			alive = a.sessions[i].Active
 		}
+	}
+	// Where its tab was, before the tabs change.
+	var g ghost
+	if o := a.tabObjs[id]; o != nil && alive {
+		g = ghost{from: a.fa.Driver().AbsolutePositionForObject(o), size: o.Size(), text: tabText(o), ok: true}
 	}
 	if id != a.id {
 		a.renderTabs()
+		a.flyToOther(g)
 		return
 	}
+	defer a.flyToOther(g)
 	if next >= 0 {
 		a.switchTo(open[next].ID, open[next].Name)
 	} else {
 		a.showList()
 	}
+}
+
+// ghost is where a closed tab was, and what it said.
+type ghost struct {
+	from fyne.Position
+	size fyne.Size
+	text string
+	ok   bool
+}
+
+// tabText returns what a tab says.
+func tabText(tab fyne.CanvasObject) string {
+	if box, ok := tab.(*fyne.Container); ok && len(box.Objects) > 0 {
+		switch o := box.Objects[0].(type) {
+		case *widget.Button:
+			return o.Text
+		case *currentTab:
+			return o.text
+		}
+	}
+	return ""
+}
+
+// flyToOther animates a copy of a closed tab, g, from where it was into
+// Other, to show where its session went: it's not ended, just out of the
+// way. The tab bar must already show Other.
+func (a *App) flyToOther(g ghost) {
+	if !g.ok || a.otherBtn == nil || !a.fa.Settings().ShowAnimations() {
+		return
+	}
+	from, size := g.from, g.size
+	to := a.fa.Driver().AbsolutePositionForObject(a.otherBtn).Add(fyne.NewPos(a.otherBtn.Size().Width/2, a.otherBtn.Size().Height/2))
+	bg := canvas.NewRectangle(theme.Color(theme.ColorNameButton))
+	bg.CornerRadius = theme.InputRadiusSize()
+	txt := canvas.NewText(g.text, theme.Color(theme.ColorNameForeground))
+	ghost := container.NewStack(bg, container.NewCenter(txt))
+	layer := container.NewWithoutLayout(ghost)
+	ghost.Move(from)
+	ghost.Resize(size)
+	overlays := a.win.Canvas().Overlays()
+	overlays.Add(layer)
+	anim := fyne.NewAnimation(450*time.Millisecond, func(f float32) {
+		s := 1 - 0.65*f
+		cur := fyne.NewSize(size.Width*s, size.Height*s)
+		center := fyne.NewPos(from.X+size.Width/2+(to.X-from.X-size.Width/2)*f, from.Y+size.Height/2+(to.Y-from.Y-size.Height/2)*f)
+		ghost.Move(fyne.NewPos(center.X-cur.Width/2, center.Y-cur.Height/2))
+		ghost.Resize(cur)
+		if f >= 1 {
+			overlays.Remove(layer)
+		}
+	})
+	anim.Curve = fyne.AnimationEaseIn
+	anim.Start()
 }
 
 // newSession starts a session, named name unless it's empty, and shows it.
@@ -697,6 +762,7 @@ func (a *App) rename(id, name string) {
 					if id == a.id {
 						a.name = newName
 						a.setTitle()
+						a.win.Canvas().Focus(a.term)
 					}
 				})
 				a.refreshSessions()

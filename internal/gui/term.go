@@ -11,6 +11,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -36,6 +37,7 @@ type Term struct {
 	under   *canvas.Rectangle // the terminal's background, under the grid
 	checker *canvas.Raster
 	cursor  *canvas.Rectangle // for cursors a cell's colors can't show
+	strikes *fyne.Container   // lines through struck-out text, which TextGrid can't draw
 	flash   *canvas.Rectangle // the bell
 	thumb   *canvas.Rectangle // where the view is in the history
 
@@ -78,6 +80,7 @@ func newTerm(a *App) *Term {
 		cursor:      canvas.NewRectangle(color.Transparent),
 		flash:       canvas.NewRectangle(color.NRGBA{0xff, 0xff, 0xff, 0x40}),
 		thumb:       canvas.NewRectangle(color.NRGBA{0x80, 0x80, 0x80, 0x80}),
+		strikes:     container.NewWithoutLayout(),
 		mouseButton: -1,
 		styles:      map[cellStyle]*widget.CustomTextGridStyle{},
 	}
@@ -268,7 +271,18 @@ func (t *Term) refreshView() {
 		}
 	}
 	grid := make([]widget.TextGridRow, len(rows))
+	cs := t.cellSize()
+	var strikes []fyne.CanvasObject
+	strike := func(y, x0, x1 int, c color.Color) {
+		l := canvas.NewLine(c)
+		l.StrokeWidth = 1
+		mid := float32(y)*cs.Height + cs.Height*0.55
+		l.Position1 = fyne.NewPos(float32(x0)*cs.Width, mid)
+		l.Position2 = fyne.NewPos(float32(x1)*cs.Width, mid)
+		strikes = append(strikes, l)
+	}
 	for y, row := range rows {
+		struck := -1 // where struck-out text started in this row
 		cells := make([]widget.TextGridCell, cols)
 		for x := range cols {
 			var c vt.Cell
@@ -287,13 +301,26 @@ func (t *Term) refreshView() {
 				r = ' ' // the second column of a wide character
 			}
 			cells[x] = widget.TextGridCell{Rune: r, Style: t.style(c.Style, invert)}
+			on := c.Style.Attrs&vt.AttrStrikethrough != 0
+			if on && struck < 0 {
+				struck = x
+			} else if !on && struck >= 0 {
+				fg, _, _ := wsclient.Colors(row[struck].Style)
+				strike(y, struck, x, fg)
+				struck = -1
+			}
+		}
+		if struck >= 0 {
+			fg, _, _ := wsclient.Colors(row[struck].Style)
+			strike(y, struck, cols, fg)
 		}
 		grid[y] = widget.TextGridRow{Cells: cells}
 	}
 	t.grid.Rows = grid
 	t.grid.Refresh()
+	t.strikes.Objects = strikes
+	t.strikes.Refresh()
 
-	cs := t.cellSize()
 	size := fyne.NewSize(float32(cols)*cs.Width, float32(len(rows))*cs.Height)
 	t.grid.Resize(size)
 	t.under.Resize(size)
@@ -386,7 +413,7 @@ func (r *termRenderer) Refresh() { r.t.refreshView() }
 
 func (r *termRenderer) Objects() []fyne.CanvasObject {
 	t := r.t
-	return []fyne.CanvasObject{t.checker, t.under, t.grid, t.cursor, t.flash, t.thumb}
+	return []fyne.CanvasObject{t.checker, t.under, t.grid, t.strikes, t.cursor, t.flash, t.thumb}
 }
 
 func (r *termRenderer) Destroy() {}
