@@ -54,12 +54,44 @@ type Terminal interface {
 	// is available once it returns.
 	Replies() []byte
 
-	// Checkpoint returns the terminal's complete state, for Restore.
+	// TakeHistory returns, and forgets, the lines that have scrolled off
+	// the top of the primary screen into its history since the last call,
+	// oldest first: logical lines, each joining the rows that soft-wrapped,
+	// returned only once complete. The emulator's own scrollback is
+	// bounded; a caller that keeps every line has all of history. lost
+	// reports whether lines were dropped from the scrollback before they
+	// could be returned, as when a single huge write outran it.
+	TakeHistory() (lines []Line, lost bool)
+
+	// Checkpoint returns the terminal's complete state, for Restore,
+	// including which lines TakeHistory has returned.
 	Checkpoint() ([]byte, error)
 
 	// Close releases the terminal's resources. Afterwards the final screen
 	// can still be read, but Write fails.
 	Close() error
+}
+
+// Line is a line of history: a logical line of the primary screen, the
+// text of its rows joined, without the blank cells at the end. Cells with
+// no text in the middle are spaces.
+type Line struct {
+	Text string `cbor:"t,omitempty"`
+
+	// Runs are the styles and hyperlinks of Text's parts, in order,
+	// covering all of it. If there are none, Text is all unstyled.
+	Runs []Run `cbor:"r,omitempty"`
+
+	// Continued is set if the next line continues this one: a single
+	// line of over a thousand rows is returned in parts.
+	Continued bool `cbor:"c,omitempty"`
+}
+
+// Run is a part of a Line with one style and hyperlink.
+type Run struct {
+	Len   int    `cbor:"n"` // in bytes of the Line's Text
+	Style Style  `cbor:"s,omitempty"`
+	Link  string `cbor:"l,omitempty"`
 }
 
 // Screen is a full snapshot of the canonical terminal state at a point in time.

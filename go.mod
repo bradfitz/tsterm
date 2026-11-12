@@ -3,7 +3,7 @@ module github.com/bradfitz/tsterm
 go 1.27.3
 
 require (
-	github.com/bradfitz/tsterm-prebuilt/ghosttyvt v0.0.0-20261111200453-0b42044ee125
+	github.com/bradfitz/tsterm-prebuilt/ghosttyvt v0.0.0-20261112033956-cd831cbc8f7e
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/fxamacker/cbor/v2 v2.9.3

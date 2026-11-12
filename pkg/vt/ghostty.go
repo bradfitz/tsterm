@@ -24,7 +24,7 @@ import (
 
 // abiVersion is the version of the glue's contract (its exports, its
 // imports, and the snapshot encoding) that this package implements.
-const abiVersion = 2
+const abiVersion = 3
 
 // ScrollbackBytes bounds each terminal's scrollback memory.
 const ScrollbackBytes = 16 << 20
@@ -138,10 +138,18 @@ type ghostty struct {
 	last          Screen // baseline for Diff
 	final         Screen // the screen at Close
 
+	// history holds lines from the glue that TakeHistory hasn't returned
+	// yet, and lost whether any were lost before them. histMark is the
+	// glue's history mark from before them, for checkpoints.
+	history  []Line
+	lost     bool
+	histMark uint32
+
 	// in is a reusable buffer in the module's memory for writes.
 	in, inCap uint32
 
 	fWrite, fResize, fSnapshot, fOutLen, fCheckpoint, fFree, fAlloc, fFreeMem, fSetColors api.Function
+	fHistory, fHistoryMark, fSetHistoryMark                                               api.Function
 }
 
 // New returns a new rows×cols terminal.
@@ -157,6 +165,9 @@ func New(rows, cols int) (Terminal, error) {
 	}
 	t.ctx = uint32(res)
 	t.SetColors(DefaultForeground, DefaultBackground)
+	t.mu.Lock()
+	t.collectHistoryLocked() // sets the glue's mark at the first row
+	t.mu.Unlock()
 	return t, nil
 }
 
@@ -182,6 +193,14 @@ func restoreNative(snapshot []byte) (*ghostty, error) {
 	return t, nil
 }
 
+// setHistoryMark sets which lines of history the terminal has returned
+// from TakeHistory, as recorded in a checkpoint: those above screen row y.
+func (t *ghostty) setHistoryMark(y uint32) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.call(t.fSetHistoryMark, uint64(t.ctx), uint64(y))
+}
+
 func instantiate() (*ghostty, error) {
 	rt, err := getRuntime()
 	if err != nil {
@@ -205,6 +224,10 @@ func instantiate() (*ghostty, error) {
 		fAlloc:      mod.ExportedFunction("ghostty_wasm_alloc"),
 		fFreeMem:    mod.ExportedFunction("ghostty_wasm_free"),
 		fSetColors:  mod.ExportedFunction("tsterm_set_colors"),
+
+		fHistory:        mod.ExportedFunction("tsterm_history"),
+		fHistoryMark:    mod.ExportedFunction("tsterm_history_mark"),
+		fSetHistoryMark: mod.ExportedFunction("tsterm_set_history_mark"),
 	}
 	terminals.Store(t.id, t)
 	return t, nil
@@ -237,7 +260,9 @@ func (t *ghostty) Write(p []byte) (int, error) {
 	}
 	n := len(p)
 	for len(p) > 0 {
-		chunk := p[:min(len(p), 64<<10)]
+		// Collect history after each chunk, which is small enough that
+		// its lines can't overrun the scrollback before they're read.
+		chunk := p[:min(len(p), writeChunk)]
 		if uint32(len(chunk)) > t.inCap {
 			if t.in != 0 {
 				t.call(t.fFreeMem, uint64(t.in), uint64(t.inCap))
@@ -252,9 +277,48 @@ func (t *ghostty) Write(p []byte) (int, error) {
 		if _, err := t.call(t.fWrite, uint64(t.ctx), uint64(t.in), uint64(len(chunk))); err != nil {
 			return 0, fmt.Errorf("vt: %w", err)
 		}
+		t.collectHistoryLocked()
 		p = p[len(chunk):]
 	}
 	return n, nil
+}
+
+// writeChunk is the most output Write passes to the emulator at once. At
+// worst, a chunk is all newlines, each a new row of history: 16K rows,
+// which take well under ScrollbackBytes.
+const writeChunk = 16 << 10
+
+// collectHistoryLocked moves the lines that have scrolled into history
+// from the glue to t.history.
+func (t *ghostty) collectHistoryLocked() {
+	if t.closed {
+		return
+	}
+	if len(t.history) == 0 && !t.lost {
+		mark, err := t.call(t.fHistoryMark, uint64(t.ctx))
+		if err != nil {
+			return
+		}
+		t.histMark = uint32(mark)
+	}
+	b, err := t.outLocked(t.fHistory)
+	if err != nil {
+		return
+	}
+	lines, lost, err := decodeHistory(b)
+	if err != nil {
+		return
+	}
+	t.history = append(t.history, lines...)
+	t.lost = t.lost || lost
+}
+
+func (t *ghostty) TakeHistory() ([]Line, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	lines, lost := t.history, t.lost
+	t.history, t.lost = nil, false
+	return lines, lost
 }
 
 func (t *ghostty) Resize(rows, cols int) {
@@ -262,6 +326,7 @@ func (t *ghostty) Resize(rows, cols int) {
 	defer t.mu.Unlock()
 	if !t.closed {
 		t.call(t.fResize, uint64(t.ctx), uint64(cols), uint64(rows))
+		t.collectHistoryLocked() // shrinking pushes rows into history
 	}
 }
 
@@ -291,11 +356,19 @@ func (t *ghostty) Checkpoint() ([]byte, error) {
 	if err == nil {
 		s, err = t.snapshotLocked()
 	}
+	// The mark covers the lines TakeHistory has returned, and not those
+	// it hasn't yet, which a restored terminal returns again.
+	mark := t.histMark
+	if len(t.history) == 0 && !t.lost && err == nil {
+		var m uint64
+		m, err = t.call(t.fHistoryMark, uint64(t.ctx))
+		mark = uint32(m)
+	}
 	t.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	return encodeCheckpoint(native, s.Repaint()), nil
+	return encodeCheckpoint(native, s.Repaint(), mark), nil
 }
 
 // outLocked calls f, a glue function returning its output buffer, and
@@ -449,28 +522,7 @@ func decodeSnapshot(b []byte) (Screen, error) {
 	for y := range s.Rows {
 		row := make([]Cell, s.Cols)
 		for x := range s.Cols {
-			wide := d.u8()
-			flags := d.u16()
-			fg, bg := d.color(), d.color()
-			g := string(d.bytes(int(d.u8())))
-			link := string(d.bytes(int(d.u16())))
-			c := Cell{Grapheme: validUTF8(g), Width: 1, Link: validUTF8(link)}
-			switch wide {
-			case 1:
-				c.Width = 2
-			case 2: // the second column of a wide character
-				c.Width, c.Grapheme = 0, ""
-			}
-			if c.Width != 0 && c.Grapheme == "" {
-				c.Grapheme = " "
-			}
-			c.Style = Style{Fg: fg, Bg: bg, Underline: UnderlineStyle(flags >> underlineShift & 0x7)}
-			for _, fa := range flagAttrs {
-				if flags&fa.flag != 0 {
-					c.Style.Attrs |= fa.attr
-				}
-			}
-			row[x] = c
+			row[x] = d.cell()
 		}
 		s.Cells[y] = row
 	}
@@ -478,6 +530,37 @@ func decodeSnapshot(b []byte) (Screen, error) {
 		return Screen{}, d.err
 	}
 	return s, nil
+}
+
+// cell decodes a cell, as the glue encodes it.
+func (d *decoder) cell() Cell {
+	wide := d.u8()
+	flags := d.u16()
+	fg, bg := d.color(), d.color()
+	g := string(d.bytes(int(d.u8())))
+	link := string(d.bytes(int(d.u16())))
+	c := Cell{Grapheme: validUTF8(g), Width: 1, Link: validUTF8(link)}
+	switch wide {
+	case 1:
+		c.Width = 2
+	case 2: // the second column of a wide character
+		c.Width, c.Grapheme = 0, ""
+	}
+	if c.Width != 0 && c.Grapheme == "" {
+		c.Grapheme = " "
+	}
+	c.Style = styleOf(flags, fg, bg)
+	return c
+}
+
+func styleOf(flags uint16, fg, bg Color) Style {
+	s := Style{Fg: fg, Bg: bg, Underline: UnderlineStyle(flags >> underlineShift & 0x7)}
+	for _, fa := range flagAttrs {
+		if flags&fa.flag != 0 {
+			s.Attrs |= fa.attr
+		}
+	}
+	return s
 }
 
 type decoder struct {

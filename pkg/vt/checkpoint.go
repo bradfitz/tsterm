@@ -12,37 +12,60 @@ import (
 // API, so a newer tstermd might not read an older one.
 //
 // Its encoding is checkpointMagic, a uint32 length and the native
-// snapshot, then a uint32 length and the repaint (lengths little endian).
-// Checkpoints from before libghostty are a bare repaint.
-const checkpointMagic = "tsvt\x01"
+// snapshot, a uint32 length and the repaint, then a uint32 history mark,
+// the screen row (counting history) above which TakeHistory has returned
+// every line; all integers little endian. Checkpoints with
+// checkpointMagicV1 have no mark, and those from before libghostty are a
+// bare repaint.
+const (
+	checkpointMagic   = "tsvt\x02"
+	checkpointMagicV1 = "tsvt\x01"
+)
 
-func encodeCheckpoint(native, repaint []byte) []byte {
-	b := make([]byte, 0, len(checkpointMagic)+8+len(native)+len(repaint))
+func encodeCheckpoint(native, repaint []byte, mark uint32) []byte {
+	b := make([]byte, 0, len(checkpointMagic)+12+len(native)+len(repaint))
 	b = append(b, checkpointMagic...)
 	b = binary.LittleEndian.AppendUint32(b, uint32(len(native)))
 	b = append(b, native...)
 	b = binary.LittleEndian.AppendUint32(b, uint32(len(repaint)))
-	return append(b, repaint...)
+	b = append(b, repaint...)
+	return binary.LittleEndian.AppendUint32(b, mark)
 }
 
 // Restore returns a terminal restored from a checkpoint. rows and cols are
 // the terminal's size, for when only the fallback repaint can be used.
 func Restore(checkpoint []byte, rows, cols int) (Terminal, error) {
 	repaint := checkpoint
-	if rest, ok := strings.CutPrefix(string(checkpoint), checkpointMagic); ok {
+	rest, v2 := strings.CutPrefix(string(checkpoint), checkpointMagic)
+	if !v2 {
+		rest, _ = strings.CutPrefix(string(checkpoint), checkpointMagicV1)
+	}
+	if len(rest) < len(checkpoint) {
 		d := decoder{b: []byte(rest)}
 		native := d.bytes(int(d.u32()))
 		repaint = d.bytes(int(d.u32()))
+		var mark uint32
+		if v2 {
+			mark = d.u32()
+		}
 		if d.err != nil {
 			return nil, fmt.Errorf("vt: corrupt checkpoint: %w", d.err)
 		}
 		if t, err := restoreNative(native); err == nil {
+			if v2 {
+				t.setHistoryMark(mark)
+			} else {
+				t.mu.Lock()
+				t.collectHistoryLocked() // marks what's in history now
+				t.history = nil
+				t.mu.Unlock()
+			}
 			if r, c := t.Size(); r != rows || c != cols {
 				t.Resize(rows, cols)
 			}
 			return t, nil
 		}
-		// Fall back to the repaint.
+		// Fall back to the repaint, which has no history.
 	}
 	t, err := New(rows, cols)
 	if err != nil {
