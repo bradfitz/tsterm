@@ -158,7 +158,7 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 		cols = 80
 	}
 	id := newID()
-	md := meta{Name: cfg.Name, Token: randomBytes(32), Created: time.Now()}
+	md := meta{Name: cfg.Name, Named: cfg.Name != "", Token: randomBytes(32), Created: time.Now()}
 	if cfg.PTY.Command != "" {
 		md.Cmd = append([]string{cfg.PTY.Command}, cfg.PTY.Args...)
 	}

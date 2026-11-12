@@ -167,6 +167,8 @@ func run(args []string) {
 		log.Fatalf("tstermd: restoring sessions: %v", err)
 	}
 	log.Printf("tstermd: restored %d sessions from %s", n, *runDir)
+	// Name unnamed sessions for what they run, as their git worktrees.
+	go mgr.AutoName(ctx)
 
 	wsSrv := &ws.Server{
 		Manager: mgr,

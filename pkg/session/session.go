@@ -82,6 +82,10 @@ type meta struct {
 	// Cmd is the command the session runs, if not the login shell.
 	Cmd []string `json:"cmd,omitzero"`
 
+	// Named is set once the session has had a name, from the user or
+	// auto-naming (see Manager.AutoName), which then leaves it be.
+	Named bool `json:"named,omitzero"`
+
 	// Closed is set when the session is out of the user's open set: its
 	// tab is closed, though it runs on. Opened is when it last joined
 	// the set, which orders the tabs; zero means when it was created.
@@ -305,6 +309,9 @@ func (s *Session) Name() string {
 func (s *Session) setName(name string) error {
 	s.metaMu.Lock()
 	s.meta.Name = name
+	if name != "" {
+		s.meta.Named = true
+	}
 	err := s.conn.SetMeta(encodeMeta(s.meta))
 	s.metaMu.Unlock()
 	if err == nil && s.Active() {

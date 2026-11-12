@@ -77,7 +77,14 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   inside WireGuard) for the CLI. Live on braid at
   https://braid.corp.ts.net:2200/.
 - **Sessions**: IDs are `pty-` + `crypto/rand.Text()`; optional names (see
-  "Naming"). Every session's TERM is xterm-256color (tstermd's emulator),
+  "Naming"). Auto-naming (`session.Manager.AutoName`, every 5 s, Linux
+  only, via /proc) names a session that has never had a name for the
+  program in front, its terminal's foreground process group's leader: the
+  worktree on a `claude -w NAME` (or `--worktree`) command line, or else the
+  linked git worktree it's working in; taken names get `-2` and up. A
+  session that has had a name, from the user or auto-naming (`Named` in its
+  metadata), is left be, even if the name is removed. TODO: macOS (libproc);
+  maybe more rules (ssh hosts, tmux session names). Every session's TERM is xterm-256color (tstermd's emulator),
   and LANG defaults to C.UTF-8.
 
 Run it: `go install github.com/bradfitz/tsterm/cmd/tstermd@latest` (or
