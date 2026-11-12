@@ -1,8 +1,0 @@
-Website = "https://github.com/bradfitz/tsterm"
-
-[Details]
-Icon = "Icon.png"
-Name = "tsterm"
-ID = "io.github.bradfitz.tsterm"
-Version = "0.1.0"
-Build = 2

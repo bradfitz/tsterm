@@ -240,12 +240,13 @@ encoding, palette), tested against real handlers. Not the UDP protocol yet.
   ended sessions (status, close), reconnecting. It remembers the last host.
 - **Packaging:** run as a bare binary, it gets a generic Dock icon on
   macOS, which shows an app bundle's icon (GLFW ignores window icons
-  there). `fyne package -os darwin -release` in `cmd/tsterm-gui` (with
-  `go install fyne.io/tools/cmd/fyne@latest`), on a Mac, makes
-  `tsterm.app` from `FyneApp.toml` and `Icon.png` (a placeholder icon);
-  CI does it too. On Linux and Windows, the embedded icon is set at run
-  time, and `fyne package -os linux` makes a tarball with a `.desktop`
-  file.
+  there). `make mac-install`, on a Mac, makes `tsterm.app`, with
+  `Icon.png` (a placeholder icon), using Fyne's packaging tool, a tool
+  dependency in go.mod (`go tool fyne`), and copies it to /Applications;
+  `make mac-app` just makes it, as CI does. The app's details are flags
+  in the Makefile rather than a `FyneApp.toml`, which the tool rewrites,
+  bumping its build number, on every run. On Linux and Windows, the
+  embedded icon is set at run time.
 - **Building:** Fyne needs cgo. Linux builds natively (needs the GL/X11 dev
   headers); Windows cross-compiles with mingw
   (`CGO_ENABLED=1 GOOS=windows CC=x86_64-w64-mingw32-gcc`, add

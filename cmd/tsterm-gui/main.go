@@ -9,8 +9,8 @@
 // With no HOST, it uses the one it last connected to, or asks.
 //
 // Run as a plain binary, it has a generic icon on macOS, where the Dock
-// shows an app bundle's. To make tsterm.app, with its icon, use Fyne's
-// packaging tool (see FyneApp.toml) on a Mac.
+// shows an app bundle's. To make tsterm.app, with its icon, and install it,
+// run "make mac-install" in the repo root, on a Mac.
 package main
 
 import (
@@ -26,7 +26,7 @@ import (
 )
 
 // icon is the app's icon: its windows' and taskbar's on Linux and
-// Windows, and its bundle's on macOS (see FyneApp.toml).
+// Windows, and its bundle's on macOS (see the Makefile).
 //
 //go:embed Icon.png
 var icon []byte
