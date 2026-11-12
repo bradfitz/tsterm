@@ -142,6 +142,19 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   hides it on the alternate screen. Cost: writes of `cat`-like output drop
   from ~260 to ~55 MB/s, mixed output from ~144 to ~100 MB/s (formatting
   plus parsing; per-cell glue calls were far slower).
+- **Frozen sessions.** A session that ends (its program exits, or it's
+  killed) stays, frozen: listed with when and how it ended (`ended`,
+  `status` in the API), and viewable read-only on the web, its last screen
+  with its history above. Each session's directory has an `info` file
+  (name, times, end), its `screen`, and its `history`; at startup, a
+  directory without a live shim, as after a reboot or crash, is a frozen
+  session with status "lost" and the last saved screen. A shim whose
+  program exited while no tstermd ran is attached anyway, so its last
+  output is read before it freezes. Frozen sessions don't hold their
+  names. DELETE ends a live session (it freezes) or deletes a frozen one;
+  the index lists them under "Ended" with delete buttons. A viewer of a
+  session that ends keeps its connection, for history. The manager keeps
+  the newest 100 frozen sessions, within 2 GB.
 - **Performance.** Writes: 132 MB/s (charm: 15). Snapshot of 200×60:
   1.4 ms (charm: 0.7); fix by snapshotting only dirty rows (the render state
   tracks them). Each terminal: ~2 MB of wasm memory at start (1 MB is the
@@ -161,15 +174,9 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
 
 ## Upcoming work
 
-- **Frozen sessions** (next; history, below in Status, is done). After a
-  reboot, or when a session's program exits, the session stays listed and
-  browseable, read-only, with its history. Sketch: tstermd saves the last
-  screen (rendered) and metadata (name, command, times, end reason) to
-  the session's directory under `-sessions-dir`; on startup, directories
-  without a live shim list as ended ("reboot" or the exit status).
-  Retention: a total disk cap, oldest first, plus delete in the UI and
-  API. Later maybe "restart" in the same directory (needs OSC 7, which
-  libghostty tracks).
+- **Frozen sessions, more.** "Restart" a frozen session in the same
+  directory (needs OSC 7, which libghostty tracks); configurable retention
+  (now the newest 100, within 2 GB); renaming frozen sessions.
 - **History, more.** Search in the web UI (`history.Store.Search` scans;
   an index later); virtualize the web viewer's history (it keeps every
   line it has loaded in the DOM); a scroll op in screen diffs (scrolling

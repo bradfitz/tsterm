@@ -127,6 +127,8 @@ type Session struct {
 	stopSaver     chan struct{}
 	stopSaverOnce sync.Once
 	saverDone     chan struct{}
+	infoMu        sync.Mutex // serializes saveInfo
+	endedAt       time.Time  // set by shutdown
 
 	done     chan struct{}
 	pumpDone chan struct{} // closed when the pump returns
@@ -293,9 +295,13 @@ func (s *Session) Name() string {
 // keeps names unique.
 func (s *Session) setName(name string) error {
 	s.metaMu.Lock()
-	defer s.metaMu.Unlock()
 	s.meta.Name = name
-	return s.conn.SetMeta(encodeMeta(s.meta))
+	err := s.conn.SetMeta(encodeMeta(s.meta))
+	s.metaMu.Unlock()
+	if err == nil && s.Active() {
+		s.saveInfo(time.Time{}, "")
+	}
+	return err
 }
 
 // Token returns the per-session opaque capability. Callers must treat it as
@@ -679,8 +685,10 @@ func (s *Session) shutdown(waitErr error) {
 		return
 	}
 	s.waitErr = waitErr
+	s.endedAt = time.Now()
 	s.takeHistory()
 	s.stopSaving()
+	s.saveInfo(s.endedAt, endStatus(waitErr))
 	s.term.Close()
 	if s.hist != nil {
 		_ = s.hist.Close()

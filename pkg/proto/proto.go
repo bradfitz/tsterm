@@ -191,6 +191,11 @@ type SessionSummary struct {
 	LastOutput   time.Time `cbor:"lo" json:"lastOutput,omitzero"`   // output from the session, changing its screen
 	LastActivity time.Time `cbor:"lx" json:"lastActivity,omitzero"` // the later of LastInput and LastOutput
 	LastAttach   time.Time `cbor:"la" json:"lastAttach,omitzero"`   // a client attached to look at the session
+
+	// Ended and Status are set for a session that has ended and is kept,
+	// frozen, to look at: when it ended, and how (see session.Frozen).
+	Ended  time.Time `cbor:"e,omitempty" json:"ended,omitzero"`
+	Status string    `cbor:"s,omitempty" json:"status,omitzero"`
 }
 
 // CreateSessionReq is the body of POST /v1/sessions.

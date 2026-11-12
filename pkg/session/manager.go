@@ -79,6 +79,7 @@ type Manager struct {
 	mu     sync.Mutex
 	byID   map[ID]*Session
 	byName map[string]ID
+	frozen map[ID]*Frozen
 }
 
 // NewManager returns an empty Manager whose shims live in dir, which must
@@ -90,6 +91,7 @@ func NewManager(dir string, launcher shim.Launcher) *Manager {
 		logf:     func(string, ...any) {},
 		byID:     map[ID]*Session{},
 		byName:   map[string]ID{},
+		frozen:   map[ID]*Frozen{},
 	}
 }
 
@@ -229,8 +231,9 @@ func (m *Manager) register(s *Session) error {
 
 // Restore attaches to the shims already running in the Manager's
 // directory, such as those started by a previous tstermd, and registers
-// their sessions. Shims whose child has exited are released. It returns
-// the number of sessions restored.
+// their sessions; those whose child has exited end, frozen, once their
+// remaining output is read. It also finds the frozen sessions in the state
+// directory. It returns the number of sessions restored.
 func (m *Manager) Restore(ctx context.Context) (int, error) {
 	socks, err := filepath.Glob(filepath.Join(m.dir, "pty-*.sock"))
 	if err != nil {
@@ -244,6 +247,9 @@ func (m *Manager) Restore(ctx context.Context) (int, error) {
 		}
 		n++
 	}
+	m.mu.Lock()
+	m.loadFrozenLocked()
+	m.mu.Unlock()
 	return n, nil
 }
 
@@ -258,15 +264,8 @@ func (m *Manager) restore(ctx context.Context, sock string) error {
 		}
 		return err
 	}
-	if conn.Info.Exited {
-		// The child exited while no tstermd was running. Let the
-		// shim go.
-		if _, err := conn.Attach(); err == nil {
-			conn.Release()
-		}
-		conn.Close()
-		return fmt.Errorf("child had exited (%s)", conn.Info.ExitStatus)
-	}
+	// If the child exited while no tstermd was running, the session
+	// reads the rest of its output, then ends, and freezes.
 	md, err := decodeMeta(conn.Info.Meta)
 	if err != nil {
 		conn.Close()
@@ -344,7 +343,7 @@ func (m *Manager) Rename(idOrName, name string) error {
 	return nil
 }
 
-// Kill closes the session with the given ID or Name.
+// Kill ends the session with the given ID or Name, which then freezes.
 func (m *Manager) Kill(idOrName string) error {
 	s, err := m.Resolve(idOrName)
 	if err != nil {
@@ -352,8 +351,12 @@ func (m *Manager) Kill(idOrName string) error {
 	}
 	_ = s.Close()
 	m.mu.Lock()
-	delete(m.byID, s.ID())
-	delete(m.byName, s.Name())
+	m.reapLocked()
+	if m.byID[s.ID()] == s {
+		// It didn't end in time.
+		delete(m.byID, s.ID())
+		delete(m.byName, s.Name())
+	}
 	m.mu.Unlock()
 	return nil
 }
@@ -381,6 +384,10 @@ type Summary struct {
 	Active   bool
 	Watchers int
 
+	// Ended and Status are set for frozen sessions (see Frozen).
+	Ended  time.Time
+	Status string
+
 	LastInput  time.Time // keyboard input sent to the child
 	LastOutput time.Time // output from the child, changing the screen
 	LastAttach time.Time // a client attached to look at the session
@@ -394,7 +401,7 @@ func (s Summary) LastActivity() time.Time {
 	return s.LastOutput
 }
 
-// List returns the current set of sessions, sorted by creation time.
+// List returns the sessions, live and frozen, sorted by creation time.
 func (m *Manager) List() []Summary {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -414,6 +421,18 @@ func (m *Manager) List() []Summary {
 			LastInput:  s.LastInput(),
 			LastOutput: s.LastOutput(),
 			LastAttach: s.LastAttach(),
+		})
+	}
+	for _, f := range m.frozen {
+		out = append(out, Summary{
+			ID:         f.ID,
+			Name:       f.Name,
+			Created:    f.Created,
+			Ended:      f.Ended,
+			Status:     f.Status,
+			LastInput:  f.LastInput,
+			LastOutput: f.LastOutput,
+			LastAttach: f.LastAttach,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
@@ -450,15 +469,25 @@ func (m *Manager) takeAll() []*Session {
 	return sessions
 }
 
-// reapLocked removes sessions whose Done channel has closed. The caller
-// must hold m.mu.
+// reapLocked removes sessions whose Done channel has closed, keeping them
+// frozen if they have a state directory. The caller must hold m.mu.
 func (m *Manager) reapLocked() {
+	froze := false
 	for id, s := range m.byID {
 		select {
 		case <-s.Done():
 			delete(m.byID, id)
-			delete(m.byName, s.Name())
+			if m.byName[s.Name()] == id {
+				delete(m.byName, s.Name())
+			}
+			if s.dir != "" {
+				m.frozen[id] = s.frozen()
+				froze = true
+			}
 		default:
 		}
+	}
+	if froze {
+		m.pruneFrozenLocked()
 	}
 }

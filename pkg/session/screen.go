@@ -111,6 +111,9 @@ func (s *Session) saveScreen() {
 	if err := writeFileSync(filepath.Join(s.dir, screenFile), screenEnc().EncodeAll(b, nil)); err != nil {
 		s.logf("session %s: saving screen: %v", s.id, err)
 	}
+	if s.Active() {
+		s.saveInfo(time.Time{}, "") // for its activity times
+	}
 }
 
 // writeFileSync replaces the file at path with data, atomically and

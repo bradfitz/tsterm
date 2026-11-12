@@ -37,13 +37,25 @@ type indexRow struct {
 	Watchers            int
 }
 
+// endedRow is a frozen session on the index page.
+type endedRow struct {
+	ID, Name, Status string
+	Ended            string // how long ago
+	ended            time.Time
+}
+
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	summaries := s.Manager.List()
 	slices.SortStableFunc(summaries, func(a, b session.Summary) int {
 		return b.LastActivity().Compare(a.LastActivity())
 	})
 	var rows []indexRow
+	var ended []endedRow
 	for _, sm := range summaries {
+		if !sm.Ended.IsZero() || sm.Status != "" {
+			ended = append(ended, endedRow{ID: string(sm.ID), Name: sm.Name, Status: sm.Status, Ended: ago(sm.Ended), ended: sm.Ended})
+			continue
+		}
 		if !sm.Active {
 			continue
 		}
@@ -57,7 +69,8 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			Watchers: sm.Watchers,
 		})
 	}
-	s.render(w, "index.html", rows)
+	slices.SortStableFunc(ended, func(a, b endedRow) int { return b.ended.Compare(a.ended) })
+	s.render(w, "index.html", map[string]any{"Live": rows, "Ended": ended})
 }
 
 // ago describes how long ago t was, or returns "never" for the zero time.
@@ -78,15 +91,17 @@ func ago(t time.Time) string {
 }
 
 func (s *Server) viewer(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.Manager.Resolve(r.PathValue("id"))
-	if err != nil {
+	id := r.PathValue("id")
+	data := map[string]string{}
+	if sess, err := s.Manager.Resolve(id); err == nil {
+		data["ID"], data["Name"] = string(sess.ID()), sess.Name()
+	} else if f := s.Manager.Frozen(id); f != nil {
+		data["ID"], data["Name"] = string(f.ID), f.Name
+	} else {
 		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
-	s.render(w, "viewer.html", map[string]string{
-		"ID":   string(sess.ID()),
-		"Name": sess.Name(),
-	})
+	s.render(w, "viewer.html", data)
 }
 
 func (s *Server) render(w http.ResponseWriter, name string, data any) {

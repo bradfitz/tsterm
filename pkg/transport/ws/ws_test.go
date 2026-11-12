@@ -343,3 +343,75 @@ func TestHistoryRequest(t *testing.T) {
 		return
 	}
 }
+
+// readUntil reads frames until one that f accepts.
+func readUntil(t *testing.T, conn *websocket.Conn, ctx context.Context, f func(proto.Envelope) bool) proto.Envelope {
+	t.Helper()
+	for {
+		if env := readEnv(t, conn, ctx); f(env) {
+			return env
+		}
+	}
+}
+
+// TestEndedAndFrozen checks that a viewer of a session that ends is told
+// how, and can still read its history; and that one connecting afterward
+// sees it frozen.
+func TestEndedAndFrozen(t *testing.T) {
+	srv, hts := mountTestServer(t)
+	sess, err := srv.Manager.Create(session.Config{
+		PTY:  pty.Config{Command: "/bin/sh", Args: []string{"-c", "i=0; while [ $i -lt 50 ]; do echo old-$i; i=$((i+1)); done; read x; echo bye; exit 2"}},
+		Rows: 10, Cols: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := "ws://" + hts.Listener.Addr().String() + "/v1/sessions/" + string(sess.ID()) + "/ws"
+	conn, ctx, cancel := dialWS(t, url+"?write=1")
+	defer cancel()
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	readEnv(t, conn, ctx)
+	if !screenHas(sess, "old-49", 5*time.Second) {
+		t.Fatal("output didn't arrive")
+	}
+	conn.Write(ctx, websocket.MessageText, []byte(`{"input":"\r"}`))
+	ended := readUntil(t, conn, ctx, func(e proto.Envelope) bool { return e.Ended != nil })
+	if ended.Ended.Status != "exit status 2" {
+		t.Errorf("Ended = %+v", ended.Ended)
+	}
+	// The connection stays open for history.
+	conn.Write(ctx, websocket.MessageText, []byte(`{"history":{"from":0,"count":3}}`))
+	h := readUntil(t, conn, ctx, func(e proto.Envelope) bool { return e.History != nil }).History
+	if len(h.Lines) != 3 || h.Lines[0].Text != "old-0" {
+		t.Errorf("history after the end = %+v", h)
+	}
+
+	// A new viewer sees it frozen.
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.Manager.Frozen(string(sess.ID())) == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	fc, ctx2, cancel2 := dialWS(t, url)
+	defer cancel2()
+	defer fc.Close(websocket.StatusNormalClosure, "")
+	snap := readEnv(t, fc, ctx2).Snapshot
+	if snap == nil {
+		t.Fatal("no snapshot of the frozen session")
+	}
+	var text strings.Builder
+	for _, row := range snap.S.Cells {
+		for _, c := range row {
+			text.WriteString(c.Grapheme)
+		}
+	}
+	if !strings.Contains(text.String(), "bye") {
+		t.Errorf("frozen screen = %q", text.String())
+	}
+	if e := readEnv(t, fc, ctx2); e.Ended == nil || e.Ended.Status != "exit status 2" {
+		t.Errorf("after the snapshot: %+v", e)
+	}
+	fc.Write(ctx2, websocket.MessageText, []byte(`{"history":{"from":40,"count":2}}`))
+	if h := readEnv(t, fc, ctx2).History; h == nil || len(h.Lines) != 2 || h.Lines[0].Text != "old-40" {
+		t.Errorf("frozen history = %+v", h)
+	}
+}

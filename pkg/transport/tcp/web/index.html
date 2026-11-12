@@ -13,11 +13,11 @@
 <button type="submit">New session</button>
 <button type="button" id="demo" title="Start tsterm's demo program, which shows off what a terminal can do">Try the demo</button>
 </form>
-{{if .}}
+{{if .Live}}
 <table>
 <thead><tr><th>Session</th><th>Name</th><th>Active</th><th>Viewed</th><th>Size</th><th>Started</th><th>Watchers</th></tr></thead>
 <tbody>
-{{range .}}<tr>
+{{range .Live}}<tr>
 <td><a href="/s/{{.ID}}"><code>{{.ID}}</code></a></td>
 <td class="rename" data-id="{{.ID}}" data-name="{{.Name}}" title="Click to rename">{{with .Name}}{{.}}{{else}}<span class="dim">-</span>{{end}}</td>
 <td>{{.Activity}}</td>
@@ -31,6 +31,22 @@
 <p class="dim">Open a session to watch it or type into it, or attach with <code>tsterm HOST NAME</code>.</p>
 {{else}}
 <p>No active sessions.</p>
+{{end}}
+{{with .Ended}}
+<h2>Ended</h2>
+<table id="ended">
+<thead><tr><th>Session</th><th>Name</th><th>Ended</th><th>How</th><th></th></tr></thead>
+<tbody>
+{{range .}}<tr>
+<td><a href="/s/{{.ID}}"><code>{{.ID}}</code></a></td>
+<td>{{with .Name}}{{.}}{{else}}<span class="dim">-</span>{{end}}</td>
+<td>{{.Ended}}</td>
+<td>{{.Status}}</td>
+<td><button type="button" class="delete" data-id="{{.ID}}" title="Delete this session's screen and history">delete</button></td>
+</tr>{{end}}
+</tbody>
+</table>
+<p class="dim">Ended sessions keep their last screen and history, to look at.</p>
 {{end}}
 <script src="/static/common.js"></script>
 <script>
@@ -48,6 +64,14 @@ for (const cell of document.querySelectorAll("td.rename")) {
       cell.dataset.name = name;
       cell.replaceChildren(name ? document.createTextNode(name) : dimDash());
     });
+  });
+}
+// Delete an ended session.
+for (const b of document.querySelectorAll("button.delete")) {
+  b.addEventListener("click", async () => {
+    const resp = await fetch(`/v1/sessions/${encodeURIComponent(b.dataset.id)}`, {method: "DELETE"});
+    if (resp.ok) b.closest("tr").remove();
+    else alert(`Can't delete: ${resp.statusText}`);
   });
 }
 function dimDash() {

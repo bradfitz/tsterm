@@ -223,6 +223,7 @@ let sizeOwner = autoFit && writable;
 let ws = null;
 
 function connect() {
+  ended = "";
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const q = writable ? "?write=1" : "";
   const sock = ws = new WebSocket(`${proto}//${location.host}/v1/sessions/${encodeURIComponent(sessionID)}/ws${q}`);
@@ -241,7 +242,13 @@ function connect() {
     else if (env[5]) applyDelta(env[5].d);
     else if (env[11]) { sizing = env[11]; showStatus(); }
     else if (env[12]) applyHistory(env[12]);
-    else if (env[7]) { statusEl.textContent = "session ended"; sock.onclose = null; ws = null; }
+    else if (env[7]) {
+      // The session ended, or had: the connection stays, for its history.
+      ended = env[7].s || "exited";
+      sock.onclose = null;
+      showStatus();
+      showMode();
+    }
   };
   sock.onclose = () => {
     if (ws !== sock) return; // replaced by a reconnect
@@ -256,8 +263,19 @@ function connect() {
 // clients that want a size, the one the user used last sets it.
 let sizing = {};
 
+// ended says how the session ended, if it has, as a session.Frozen's
+// Status; it's then read-only, with its last screen and history.
+let ended = "";
+
 function showStatus() {
   if (!ws) return;
+  if (ended) {
+    statusEl.textContent = ended === "exited" ? "ended" : ended === "lost" ? "ended (lost)" : `ended (${ended})`;
+    statusEl.title = ended === "lost"
+      ? "tstermd, the session's shim, or the system went away while it ran; this is its last saved screen"
+      : "The session's program has ended; this is its last screen";
+    return;
+  }
   statusEl.textContent = !writable ? "view-only"
     : !sizeOwner ? "live"
     : sizing.l ? "live, sizing to window"
@@ -278,7 +296,7 @@ function reconnect() {
 }
 
 function send(msg) {
-  if (writable && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  if (writable && !ended && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
 // type sends what the user typed or pasted, and, as typing in a terminal
@@ -719,7 +737,7 @@ function updateCornerHandle() {
   const termEl = screenEl.parentElement; // with the history above
   const room = areaEl.clientWidth - termEl.offsetWidth >= 2 * cw &&
     areaEl.clientHeight - termEl.offsetHeight >= ch;
-  cornerEl.hidden = !writable || !room;
+  cornerEl.hidden = !writable || !!ended || !room;
 }
 const autoFitEl = document.getElementById("autofit");
 const fitOnceEl = document.getElementById("fitonce");
@@ -780,7 +798,7 @@ document.addEventListener("mousemove", (ev) => {
     ev.clientY > r.bottom - fitZone && ev.clientY < r.bottom;
   // The bar is wider than the zone, so it stays up while the mouse is on it.
   const onBar = fitBarEl.classList.contains("visible") && fitBarEl.contains(ev.target);
-  showFitBar(writable && (near || onBar));
+  showFitBar(writable && !ended && (near || onBar));
 });
 document.addEventListener("mouseleave", () => showFitBar(false));
 fitOnceEl.addEventListener("click", () => {
@@ -821,7 +839,8 @@ const modeEl = document.getElementById("mode");
 function showMode() {
   modeEl.textContent = writable ? "⌨ typing" : "👁 view-only";
   modeEl.title = writable ? "Click to stop typing into the session" : "Click to type into the session";
-  for (const b of document.querySelectorAll(".autofit")) b.hidden = !writable;
+  modeEl.hidden = !!ended;
+  for (const b of document.querySelectorAll(".autofit")) b.hidden = !writable || !!ended;
   updateCornerHandle();
 }
 modeEl.addEventListener("click", () => {

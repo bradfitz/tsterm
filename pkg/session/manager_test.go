@@ -112,12 +112,24 @@ func TestManagerReapsFinishedSessions(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("session did not finish")
 	}
-	// List triggers reap; the dead session should be gone.
-	list := m.List()
-	for _, e := range list {
+	// List triggers reap; the dead session should be listed, frozen.
+	found := false
+	for _, e := range m.List() {
 		if e.ID == s.ID() {
-			t.Errorf("dead session still in List")
+			found = true
+			if e.Active || e.Status != "exited" || e.Ended.IsZero() {
+				t.Errorf("finished session listed as %+v", e)
+			}
 		}
+	}
+	if !found {
+		t.Error("finished session not listed")
+	}
+	if m.Get(s.ID()) != nil {
+		t.Error("finished session is still live")
+	}
+	if m.Frozen(string(s.ID())) == nil {
+		t.Error("finished session isn't frozen")
 	}
 }
 
@@ -214,11 +226,20 @@ func TestRestoreReleasesExited(t *testing.T) {
 	m2 := NewManager(m.dir, l)
 	m2.SetStateDir(m.stateDir)
 	t.Cleanup(func() { m2.Close() })
-	if n, _ := m2.Restore(context.Background()); n != 0 {
-		t.Errorf("restored %d sessions, want 0", n)
+	m2.Restore(context.Background())
+	// It reads the rest of the output, ends, and freezes.
+	deadline := time.Now().Add(5 * time.Second)
+	for m2.Frozen(string(s.ID())) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("exited session never froze")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if f := m2.Frozen(string(s.ID())); f.Status != "exited" {
+		t.Errorf("Status = %q, want exited", f.Status)
 	}
 	if m2.Get(s.ID()) != nil {
-		t.Error("exited session was restored")
+		t.Error("exited session is live")
 	}
 }
 

@@ -142,6 +142,8 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 			LastOutput:   sm.LastOutput,
 			LastActivity: sm.LastActivity(),
 			LastAttach:   sm.LastAttach,
+			Ended:        sm.Ended,
+			Status:       sm.Status,
 		})
 	}
 	writeResponse(w, r, http.StatusOK, wire)
@@ -231,8 +233,13 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, r, http.StatusOK, s.infoFor(sess))
 }
 
+// kill ends a live session, which then freezes, or deletes a frozen one.
 func (s *Server) kill(w http.ResponseWriter, r *http.Request) {
-	if err := s.Manager.Kill(r.PathValue("id")); err != nil {
+	err := s.Manager.Kill(r.PathValue("id"))
+	if errors.Is(err, session.ErrNotFound) {
+		err = s.Manager.Remove(r.PathValue("id"))
+	}
+	if err != nil {
 		if errors.Is(err, session.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "not_found", err.Error())
 			return

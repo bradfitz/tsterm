@@ -29,6 +29,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/bradfitz/tsterm/pkg/auth"
+	"github.com/bradfitz/tsterm/pkg/history"
 	"github.com/bradfitz/tsterm/pkg/proto"
 	"github.com/bradfitz/tsterm/pkg/session"
 )
@@ -62,9 +63,12 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, err := s.Manager.Resolve(id)
+	var frozen *session.Frozen
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
+		if frozen = s.Manager.Frozen(id); frozen == nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Allow same-origin and any tailnet origin; the auth middleware
@@ -80,6 +84,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	if frozen != nil {
+		if err := s.serveFrozen(ctx, conn, frozen); err != nil && !errors.Is(err, context.Canceled) {
+			s.Logf("ws: frozen %s: %v", frozen.ID, err)
+		}
+		conn.Close(websocket.StatusNormalClosure, "")
+		return
+	}
 
 	// Read inbound frames in the background: input from a writable
 	// connection, and otherwise just so that a browser closing the
@@ -143,7 +154,7 @@ func (s *Server) handleMessage(ctx context.Context, conn *websocket.Conn, sess *
 		return err
 	}
 	if h := m.History; h != nil {
-		if err := sendHistory(ctx, conn, sess, h.From, h.Count); err != nil {
+		if err := sendHistory(ctx, conn, sess.History(), h.From, h.Count); err != nil {
 			return err
 		}
 	}
@@ -220,10 +231,10 @@ func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.S
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-w.Done():
-			return writeEnv(ctx, conn, proto.Envelope{Ended: &proto.Ended{Status: "closed"}})
+			return s.ended(ctx, conn, sess)
 		case _, ok := <-w.Ticks():
 			if !ok {
-				return writeEnv(ctx, conn, proto.Envelope{Ended: &proto.Ended{Status: "closed"}})
+				return s.ended(ctx, conn, sess)
 			}
 			if err := sendSizing(); err != nil {
 				return err
@@ -238,10 +249,11 @@ func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.S
 	}
 }
 
-// sendHistory sends up to count lines of sess's history from line from.
-func sendHistory(ctx context.Context, conn *websocket.Conn, sess *session.Session, from uint64, count int) error {
+// sendHistory sends up to count lines of history h, which may be nil,
+// from line from.
+func sendHistory(ctx context.Context, conn *websocket.Conn, h *history.Store, from uint64, count int) error {
 	reply := &proto.History{From: from}
-	if h := sess.History(); h != nil {
+	if h != nil {
 		first, lines, err := h.Read(from, min(max(count, 0), maxHistoryLines))
 		if err != nil {
 			return err
@@ -249,6 +261,56 @@ func sendHistory(ctx context.Context, conn *websocket.Conn, sess *session.Sessio
 		reply.First, reply.From, reply.Lines = h.First(), first, lines
 	}
 	return writeEnv(ctx, conn, proto.Envelope{History: reply})
+}
+
+// ended tells the viewer that sess has ended, with its final screen, and
+// keeps the connection open, for its history, until the viewer closes it.
+func (s *Server) ended(ctx context.Context, conn *websocket.Conn, sess *session.Session) error {
+	<-sess.Done()
+	// The final screen, which the last delta may not have caught up to.
+	if err := writeEnv(ctx, conn, proto.Envelope{Snapshot: &proto.Snapshot{S: sess.Snapshot()}}); err != nil {
+		return err
+	}
+	if err := writeEnv(ctx, conn, proto.Envelope{Ended: &proto.Ended{Status: sess.EndStatus()}}); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return nil
+}
+
+// serveFrozen shows the viewer a frozen session: its last screen, then
+// Ended, and then its history, as the viewer asks for it.
+func (s *Server) serveFrozen(ctx context.Context, conn *websocket.Conn, f *session.Frozen) error {
+	ss, err := f.Screen()
+	if err != nil {
+		s.Logf("ws: frozen %s has no screen: %v", f.ID, err)
+	}
+	h, err := f.OpenHistory()
+	if err != nil {
+		s.Logf("ws: frozen %s's history: %v", f.ID, err)
+		h = nil
+	} else {
+		defer h.Close()
+	}
+	if err := writeEnv(ctx, conn, proto.Envelope{Snapshot: &proto.Snapshot{S: ss.Screen}}); err != nil {
+		return err
+	}
+	if err := writeEnv(ctx, conn, proto.Envelope{Ended: &proto.Ended{Status: f.Status}}); err != nil {
+		return err
+	}
+	for {
+		typ, b, err := conn.Read(ctx)
+		if err != nil {
+			return err
+		}
+		var m inputMsg
+		if typ != websocket.MessageText || json.Unmarshal(b, &m) != nil || m.History == nil {
+			continue
+		}
+		if err := sendHistory(ctx, conn, h, m.History.From, m.History.Count); err != nil {
+			return err
+		}
+	}
 }
 
 func writeEnv(ctx context.Context, conn *websocket.Conn, env proto.Envelope) error {

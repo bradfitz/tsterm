@@ -73,6 +73,9 @@ func formatList(sessions []proto.SessionSummary) string {
 			name = "-"
 		}
 		state := "ended"
+		if s.Status != "" && s.Status != "exited" {
+			state += " (" + s.Status + ")"
+		}
 		if s.Active {
 			state = "active never"
 			if !s.LastActivity.IsZero() {
