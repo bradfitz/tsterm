@@ -41,7 +41,9 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
 - **CLI client** (`cmd/tsterm`): attach, list, create, kill; status line when
   the server is unreachable; Ctrl-^ . disconnects; mirrors mouse, bracketed
   paste, cursor-key, and focus modes onto the local terminal.
-- **Web UI** (`http://HOST:2200/`, owner only): session list with renaming
+- **Web UI** (`http://HOST:2200/`, owner only): session list (names first,
+  linking to the sessions, unnamed ones as their IDs' dim starts, with a
+  pencil to rename on hovering over a row) with renaming
   and creation; per-session viewer with typing (on by default), view-only
   mode, auto-fit (size-owning) mode, mouse input, and tabs of recently
   active sessions in the one header bar (scrolling sideways, by wheel too,

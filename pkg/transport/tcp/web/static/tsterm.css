@@ -159,12 +159,21 @@ body.viewer header { flex-shrink: 0; }
   body.viewer header #status { display: none; }
   #toasts { top: auto; bottom: 4rem; right: .5rem; left: .5rem; }
   body:not(.viewer) { margin: 1rem; }
-  table th:nth-child(5), table td:nth-child(5),
-  table th:nth-child(6), table td:nth-child(6),
-  table th:nth-child(7), table td:nth-child(7) { display: none; }
+  table .wide { display: none; }
   table td code { font-size: .8em; }
 }
 
 /* The session list: rows of sessions whose tabs are closed are dim. */
 tr.closed td { color: var(--dim); }
+
+/* A session's name links to it; an unnamed one shows its ID's start,
+   dimly. Its pencil, to rename it, shows on hovering over its row, and
+   always on touch screens. */
+td.name a { text-decoration: none; font-weight: 500; }
+td.name a:hover { text-decoration: underline; }
+td.name a.unnamed { color: var(--dim); font-family: ui-monospace, Menlo, monospace; font-weight: normal; }
+td.name .pencil { visibility: hidden; margin-left: .3rem; padding: 0 .25rem; border: 0; background: none; color: var(--dim); font: inherit; cursor: pointer; }
+td.name .pencil:hover { color: inherit; }
+tr:hover td.name .pencil, td.name .pencil:focus-visible { visibility: visible; }
+@media (pointer: coarse) { td.name .pencil { visibility: visible; } }
 h2 { font-weight: 600; font-size: 1.1rem; margin-top: 1.5rem; }

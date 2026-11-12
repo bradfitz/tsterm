@@ -189,8 +189,8 @@ func TestRename(t *testing.T) {
 	}
 	// The pages offer renaming.
 	_, _, body := get(t, hts.URL+"/", "text/html")
-	if !strings.Contains(body, `class="rename" data-id="`+string(a.ID())+`"`) {
-		t.Errorf("index has no rename cell: %s", body)
+	if !strings.Contains(body, `class="name" data-id="`+string(a.ID())+`"`) || !strings.Contains(body, `class="pencil"`) {
+		t.Errorf("index has no name cell with a pencil to rename: %s", body)
 	}
 }
 

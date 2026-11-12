@@ -33,18 +33,28 @@ func must[T any](v T, err error) T {
 }
 
 type indexRow struct {
-	ID, Name, Size, Age string
-	Activity, Attach    string // how long ago
-	Watchers            int
-	Closed              bool // its tab is closed
+	ID, Name, Label  string // Label is Name, or the ID's start (see label)
+	Age              string // how long ago it started
+	Activity, Attach string // how long ago
+	Watchers         int
+	Closed           bool // its tab is closed
 }
 
 // endedRow is a frozen session on the index page.
 type endedRow struct {
-	ID, Name, Status, Cmd string
-	Age, Ended            string // how long ago
-	Closed                bool
-	ended                 time.Time
+	ID, Name, Label, Status, Cmd string
+	Age, Ended                   string // how long ago
+	Closed                       bool
+	ended                        time.Time
+}
+
+// label names a session in a list: its name, or if it has none, the start
+// of its ID, as the viewer's tabs do.
+func label(id session.ID, name string) string {
+	if name != "" {
+		return name
+	}
+	return string(id)[:min(len(id), len("pty-")+4)]
 }
 
 // maxEndedRows bounds the ended sessions the index page lists.
@@ -60,7 +70,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	for _, sm := range summaries {
 		if !sm.Ended.IsZero() || sm.Status != "" {
 			ended = append(ended, endedRow{
-				ID: string(sm.ID), Name: sm.Name, Status: sm.Status, Cmd: strings.Join(sm.Cmd, " "),
+				ID: string(sm.ID), Name: sm.Name, Label: label(sm.ID, sm.Name), Status: sm.Status, Cmd: strings.Join(sm.Cmd, " "),
 				Age: ago(sm.Created), Ended: ago(sm.Ended), Closed: sm.Closed, ended: sm.Ended,
 			})
 			continue
@@ -71,7 +81,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, indexRow{
 			ID:       string(sm.ID),
 			Name:     sm.Name,
-			Size:     fmt.Sprintf("%d×%d", sm.Cols, sm.Rows),
+			Label:    label(sm.ID, sm.Name),
 			Age:      ago(sm.Created),
 			Activity: ago(sm.LastActivity()),
 			Attach:   ago(sm.LastAttach),

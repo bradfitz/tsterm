@@ -16,16 +16,14 @@
 {{if .Live}}
 <h2 id="running">Running</h2>
 <table>
-<thead><tr><th>Session</th><th>Name</th><th>Active</th><th>Viewed</th><th>Size</th><th>Started</th><th>Watchers</th><th>Tab</th></tr></thead>
+<thead><tr><th>Name</th><th>Active</th><th class="wide">Viewed</th><th class="wide">Started</th><th class="wide">Watchers</th><th>Tab</th></tr></thead>
 <tbody>
 {{range .Live}}<tr{{if .Closed}} class="closed"{{end}}>
-<td><a href="/s/{{.ID}}"><code>{{.ID}}</code></a></td>
-<td class="rename" data-id="{{.ID}}" data-name="{{.Name}}" title="Click to rename">{{with .Name}}{{.}}{{else}}<span class="dim">-</span>{{end}}</td>
+<td class="name" data-id="{{.ID}}" data-name="{{.Name}}"><a href="/s/{{.ID}}" title="{{.ID}}"{{if not .Name}} class="unnamed"{{end}}>{{.Label}}</a><button type="button" class="pencil" title="Rename" aria-label="Rename">✎</button></td>
 <td>{{.Activity}}</td>
-<td>{{.Attach}}</td>
-<td>{{.Size}}</td>
-<td>{{.Age}}</td>
-<td>{{.Watchers}}</td>
+<td class="wide">{{.Attach}}</td>
+<td class="wide">{{.Age}}</td>
+<td class="wide">{{.Watchers}}</td>
 <td>{{if .Closed}}<button type="button" class="reopen" data-id="{{.ID}}" title="Give it a tab again">reopen</button>{{else}}<span class="dim">open</span>{{end}}</td>
 </tr>{{end}}
 </tbody>
@@ -37,13 +35,12 @@
 {{with .Ended}}
 <h2 id="ended">Ended</h2>
 <table>
-<thead><tr><th>Session</th><th>Name</th><th>Command</th><th>Started</th><th>Ended</th><th>How</th><th>Tab</th><th></th></tr></thead>
+<thead><tr><th>Name</th><th class="wide">Command</th><th class="wide">Started</th><th>Ended</th><th>How</th><th>Tab</th><th></th></tr></thead>
 <tbody>
 {{range .}}<tr{{if .Closed}} class="closed"{{end}}>
-<td><a href="/s/{{.ID}}"><code>{{.ID}}</code></a></td>
-<td>{{with .Name}}{{.}}{{else}}<span class="dim">-</span>{{end}}</td>
-<td>{{with .Cmd}}<code>{{.}}</code>{{else}}<span class="dim">shell</span>{{end}}</td>
-<td>{{.Age}}</td>
+<td class="name"><a href="/s/{{.ID}}" title="{{.ID}}"{{if not .Name}} class="unnamed"{{end}}>{{.Label}}</a></td>
+<td class="wide">{{with .Cmd}}<code>{{.}}</code>{{else}}<span class="dim">shell</span>{{end}}</td>
+<td class="wide">{{.Age}}</td>
 <td>{{.Ended}}</td>
 <td>{{.Status}}</td>
 <td>{{if .Closed}}<button type="button" class="reopen" data-id="{{.ID}}" title="Give it a tab again">reopen</button>{{else}}<span class="dim">open</span>{{end}}</td>
@@ -62,13 +59,17 @@ document.getElementById("new").addEventListener("submit", (ev) => {
 });
 document.getElementById("demo").addEventListener("click", () => newSession(demoName));
 
-// Click a name to rename its session.
-for (const cell of document.querySelectorAll("td.rename")) {
-  cell.addEventListener("click", () => {
-    if (cell.querySelector("input")) return;
+// A name's pencil renames its session.
+for (const pencil of document.querySelectorAll("td.name .pencil")) {
+  const cell = pencil.closest("td");
+  pencil.addEventListener("click", () => {
+    const saved = Array.from(cell.childNodes);
     startRename(cell, cell.dataset.id, cell.dataset.name, (name) => {
       cell.dataset.name = name;
-      cell.replaceChildren(name ? document.createTextNode(name) : dimDash());
+      const a = saved.find(n => n.tagName === "A");
+      a.textContent = name || cell.dataset.id.slice(0, "pty-".length + 4);
+      a.classList.toggle("unnamed", !name);
+      cell.replaceChildren(...saved);
     });
   });
 }
@@ -100,12 +101,6 @@ for (const b of document.querySelectorAll("button.purge")) {
     if (resp.ok) b.closest("tr").remove();
     else alert(`Can't delete: ${resp.statusText}`);
   });
-}
-function dimDash() {
-  const s = document.createElement("span");
-  s.className = "dim";
-  s.textContent = "-";
-  return s;
 }
 </script>
 </body>
