@@ -132,7 +132,11 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   reflow) and formats new lines with libghostty's formatter (VT text,
   unwrapped), which Go parses into `vt.Line`s; checkpoints carry the mark
   and the stored line count, so a restart's replay doesn't duplicate lines.
-  Screens carry the line count (`h`); WebSocket viewers ask for ranges
+  Each session also saves its screen (`<id>/screen`, zstd CBOR of a
+  `session.SavedScreen`) every 5 s while it changes and when it ends,
+  after syncing its history, atomically (temp file, fsync, rename), so
+  that after a crash of anything, even the system, what was on the screen
+  and above it survives. Screens carry the line count (`h`); WebSocket viewers ask for ranges
   (`{"history": {"from", "count"}}`). The web viewer shows history above the
   screen, loads older lines near the top, stays pinned to the bottom, and
   hides it on the alternate screen. Cost: writes of `cat`-like output drop

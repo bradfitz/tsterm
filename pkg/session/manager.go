@@ -98,12 +98,13 @@ func NewManager(dir string, launcher shim.Launcher) *Manager {
 // history.
 func (m *Manager) SetStateDir(dir string) { m.stateDir = dir }
 
-// historyDir returns where the session id stores its history, or "".
-func (m *Manager) historyDir(id ID) string {
+// sessionDir returns the session id's directory, for its history and
+// saved screen, or "".
+func (m *Manager) sessionDir(id ID) string {
 	if m.stateDir == "" {
 		return ""
 	}
-	return filepath.Join(m.stateDir, string(id), "history")
+	return filepath.Join(m.stateDir, string(id))
 }
 
 // SetDemo sets the program that sessions created with DemoName run.
@@ -177,7 +178,7 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: connecting to new shim: %w", err)
 	}
-	s, err := attach(conn, id, md, false, m.historyDir(id))
+	s, err := attach(conn, id, md, false, m.sessionDir(id), m.logf)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -271,7 +272,7 @@ func (m *Manager) restore(ctx context.Context, sock string) error {
 		conn.Close()
 		return fmt.Errorf("bad metadata: %w", err)
 	}
-	s, err := attach(conn, ID(conn.Info.ID), md, true, m.historyDir(ID(conn.Info.ID)))
+	s, err := attach(conn, ID(conn.Info.ID), md, true, m.sessionDir(ID(conn.Info.ID)), m.logf)
 	if err != nil {
 		conn.Close()
 		return err

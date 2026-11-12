@@ -351,6 +351,7 @@ func (s *Store) writableSegLocked(first uint64) (*segment, error) {
 		}
 	}
 	if s.w != nil {
+		s.w.Sync()
 		s.w.Close()
 		s.w = nil
 	}
@@ -535,6 +536,24 @@ func (s *Store) Truncate(n uint64) error {
 		s.pending = append(s.pending, l)
 		s.pendLen += lineSize(l)
 		s.next++
+	}
+	return nil
+}
+
+// Sync writes the lines appended since the last frame, and makes sure
+// everything written is on disk, so that it survives a crash of the
+// system.
+func (s *Store) Sync() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	if err := s.flushLocked(); err != nil {
+		return err
+	}
+	if s.w != nil {
+		return s.w.Sync()
 	}
 	return nil
 }

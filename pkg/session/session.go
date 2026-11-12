@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -118,6 +119,15 @@ type Session struct {
 	histMu sync.Mutex
 	hist   *history.Store
 
+	// dir, if not empty, is the session's directory, which holds its
+	// history and its saved screen (see saveScreenLoop).
+	dir           string
+	logf          func(format string, args ...any)
+	screenDirty   atomic.Bool // since the screen was last saved
+	stopSaver     chan struct{}
+	stopSaverOnce sync.Once
+	saverDone     chan struct{}
+
 	done     chan struct{}
 	pumpDone chan struct{} // closed when the pump returns
 
@@ -154,8 +164,9 @@ type Session struct {
 // which case output already produced was seen, and its queries answered,
 // by that tstermd.
 //
-// If histDir isn't empty, the session's history is stored there.
-func attach(conn *shim.Conn, id ID, m meta, restored bool, histDir string) (*Session, error) {
+// If dir isn't empty, the session keeps its history and saves its screen
+// there.
+func attach(conn *shim.Conn, id ID, m meta, restored bool, dir string, logf func(string, ...any)) (*Session, error) {
 	ckpt, err := conn.Attach()
 	if err != nil {
 		return nil, err
@@ -172,8 +183,8 @@ func attach(conn *shim.Conn, id ID, m meta, restored bool, histDir string) (*Ses
 		return nil, err
 	}
 	var hist *history.Store
-	if histDir != "" {
-		if hist, err = history.Open(histDir, 0); err != nil {
+	if dir != "" {
+		if hist, err = history.Open(filepath.Join(dir, "history"), 0); err != nil {
 			term.Close()
 			return nil, err
 		}
@@ -198,6 +209,10 @@ func attach(conn *shim.Conn, id ID, m meta, restored bool, histDir string) (*Ses
 		replayEnd:  replayEnd(conn, restored),
 		term:       term,
 		hist:       hist,
+		dir:        dir,
+		logf:       logf,
+		stopSaver:  make(chan struct{}),
+		saverDone:  make(chan struct{}),
 		done:       make(chan struct{}),
 		pumpDone:   make(chan struct{}),
 		watchers:   map[uint64]*Watcher{},
@@ -206,6 +221,10 @@ func attach(conn *shim.Conn, id ID, m meta, restored bool, histDir string) (*Ses
 	s.offset.Store(ckpt.Offset)
 	s.ckptOffset.Store(ckpt.Offset)
 	go s.pump()
+	if dir != "" {
+		s.screenDirty.Store(true)
+		go s.saveScreenLoop()
+	}
 	return s, nil
 }
 
@@ -415,6 +434,7 @@ func (s *Session) Resize(rows, cols int) error {
 	}
 	s.term.Resize(rows, cols)
 	s.takeHistory() // shrinking can scroll lines off
+	s.screenDirty.Store(true)
 	if r := s.term.Replies(); len(r) > 0 {
 		_ = s.conn.Input(r) // the size, in in-band resize mode
 	}
@@ -564,6 +584,7 @@ func (s *Session) Detach() {
 	}
 	s.conn.Close()
 	s.takeHistory()
+	s.stopSaving()
 	s.term.Close()
 	if s.hist != nil {
 		_ = s.hist.Close()
@@ -596,6 +617,7 @@ func (s *Session) pump() {
 		}
 		_, _ = s.term.Write(out)
 		s.takeHistory()
+		s.screenDirty.Store(true)
 		s.notifyWatchers()
 		replies := s.term.Replies()
 		if offset := s.offset.Add(uint64(len(out))); offset > s.replayEnd {
@@ -658,6 +680,7 @@ func (s *Session) shutdown(waitErr error) {
 	}
 	s.waitErr = waitErr
 	s.takeHistory()
+	s.stopSaving()
 	s.term.Close()
 	if s.hist != nil {
 		_ = s.hist.Close()
