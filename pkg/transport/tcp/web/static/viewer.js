@@ -106,16 +106,24 @@ function renderRow(cells, y) {
     const st = cell.s || {}, attrs = st.a || 0;
     let fg = color(st.f), bg = color(st.b);
     if (attrs & REVERSE) { [fg, bg] = [bg || "#000", fg || "#ddd"]; }
-    if (fg) span.style.color = fg;
-    if (bg) span.style.backgroundColor = bg;
     const cls = [];
+    if (cursor && cursor.v && cursor.r === y && cursor.c === x) {
+      // The stylesheet draws the cursor in the cell's colors, inverted
+      // for a block cursor in a focused page.
+      cls.push("cursor", "cursor-" + (["block", "underline", "bar"][cursor.s || 0] || "block"));
+      if (cursor.b) cls.push("blink");
+      span.style.setProperty("--cfg", fg || "#ddd");
+      span.style.setProperty("--cbg", bg || "#000");
+    } else {
+      if (fg) span.style.color = fg;
+      if (bg) span.style.backgroundColor = bg;
+    }
     if (attrs & BOLD) cls.push("bold");
     if (attrs & FAINT) cls.push("faint");
     if (attrs & ITALIC) cls.push("italic");
     if (st.u) cls.push("underline");
     if (attrs & STRIKE) cls.push("strike");
     if (attrs & CONCEAL) cls.push("conceal");
-    if (cursor && cursor.v && cursor.r === y && cursor.c === x) cls.push("cursor");
     if (cls.length) span.className = cls.join(" ");
     if (cell.l) {
       const a = document.createElement("a");
@@ -484,9 +492,12 @@ screenEl.addEventListener("contextmenu", (ev) => {
   if (mouseWanted(ev)) ev.preventDefault(); // right clicks go to the program
 });
 
-// Focus reports, for programs that asked for them.
-window.addEventListener("focus", () => { if (modes.f) send({input: "\x1b[I"}); });
-window.addEventListener("blur", () => { if (modes.f) send({input: "\x1b[O"}); });
+// Focus reports, for programs that asked for them, and the cursor, which is
+// hollow while the page isn't focused.
+function showFocus() { screenEl.classList.toggle("focused", document.hasFocus()); }
+window.addEventListener("focus", () => { showFocus(); if (modes.f) send({input: "\x1b[I"}); });
+window.addEventListener("blur", () => { showFocus(); if (modes.f) send({input: "\x1b[O"}); });
+showFocus();
 
 // Buttons must not take the focus: a focused button would turn a typed
 // Enter or space into a click.

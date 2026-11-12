@@ -88,7 +88,18 @@ main.oob {
   background: #000;
   display: inline-block; vertical-align: top;
 }
-.screen .cursor { outline: 1px solid #ddd; }
+/* Every row is exactly one line tall, whatever its cells' boxes. */
+.screen > div { height: 1.2em; }
+/* The cursor, in its cell's colors (--cfg and --cbg): hollow while the
+   page isn't focused, and otherwise the program's shape, an inverted
+   block by default. It's a whole row tall, unlike an inline background,
+   and its borders are inset, to stay inside the cell. */
+.screen .cursor { display: inline-block; height: 1.2em; vertical-align: top; color: var(--cfg); background-color: var(--cbg); box-shadow: inset 0 0 0 1px var(--cfg); }
+.screen.focused .cursor-block { color: var(--cbg); background-color: var(--cfg); box-shadow: none; }
+.screen.focused .cursor-underline { box-shadow: inset 0 -2px var(--cfg); }
+.screen.focused .cursor-bar { box-shadow: inset 2px 0 var(--cfg); }
+.screen.focused .cursor.blink { animation: cursor-blink 1.2s step-end infinite; }
+@keyframes cursor-blink { 50% { color: var(--cfg); background-color: var(--cbg); box-shadow: none; } }
 .screen .bold { font-weight: bold; }
 .screen .faint { opacity: .6; }
 .screen .italic { font-style: italic; }
