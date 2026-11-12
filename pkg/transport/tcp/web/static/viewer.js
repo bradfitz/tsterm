@@ -582,7 +582,9 @@ document.addEventListener("mousemove", (ev) => {
   const r = areaEl.getBoundingClientRect();
   const near = ev.clientX > r.right - fitZone && ev.clientX < r.right &&
     ev.clientY > r.bottom - fitZone && ev.clientY < r.bottom;
-  showFitBar(writable && near);
+  // The bar is wider than the zone, so it stays up while the mouse is on it.
+  const onBar = fitBarEl.classList.contains("visible") && fitBarEl.contains(ev.target);
+  showFitBar(writable && (near || onBar));
 });
 document.addEventListener("mouseleave", () => showFitBar(false));
 fitOnceEl.addEventListener("click", () => {

@@ -179,6 +179,13 @@ the web UI, where browsers restrict or lack the equivalent.
   macOS/BSDs (`getpeereid`) TODO in `pkg/shim/peer_other.go`.
 - Input could be applied twice if the server applies a keystroke, its ack is
   lost, and the link stays one-way broken for the whole idle timeout.
+- Two viewers with auto-fit on fight over the session's size: each refits
+  to its own window whenever its area changes, so the size flips to
+  whichever resized last. Idea: one auto-fit leader per session, tracked by
+  the server. Turning auto-fit on, or interacting with a viewer (typing,
+  resizing its window, mousing over it), makes that viewer the leader. Only
+  the leader's resizes apply; others show the leader's size (checkerboard
+  or fit once) and say who has it. The CLI's resizes should take part too.
 - Hyperlink URIs and graphemes over 256 bytes are dropped by the glue.
 - No remote yet; history before 2026-11-10 was reconstructed approximately.
 
