@@ -3,6 +3,7 @@ package wsclient
 import (
 	"context"
 	"encoding/json/v2"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -17,12 +18,21 @@ import (
 // send input and size the session. Conns acknowledge Deltas only when told
 // to (Ack), once they're shown, so that the server sends no faster than
 // the client can show them.
+//
+// Its methods that send queue what they send, in order, and return without
+// waiting for the network, so that a UI may call them as the user types.
 type Conn struct {
 	ws       *websocket.Conn
 	writable bool
 
-	mu sync.Mutex // serializes writes
+	out       chan []byte // to send, in order
+	done      chan struct{}
+	closeOnce sync.Once
 }
+
+// sendQueue bounds the messages queued to send. A sender blocks while it's
+// full, as when the network has stalled.
+const sendQueue = 1024
 
 // Dial connects to the stream of the session id, live or ended.
 func (c *Client) Dial(ctx context.Context, id string, writable bool) (*Conn, error) {
@@ -41,7 +51,25 @@ func (c *Client) Dial(ctx context.Context, id string, writable bool) (*Conn, err
 		return nil, err
 	}
 	ws.SetReadLimit(64 << 20)
-	return &Conn{ws: ws, writable: writable}, nil
+	c2 := &Conn{ws: ws, writable: writable, out: make(chan []byte, sendQueue), done: make(chan struct{})}
+	go c2.writer()
+	return c2, nil
+}
+
+// writer sends what's queued, in order, until the Conn is closed or a
+// send fails, which closes it.
+func (c *Conn) writer() {
+	for {
+		select {
+		case <-c.done:
+			return
+		case b := <-c.out:
+			if err := c.ws.Write(context.Background(), websocket.MessageText, b); err != nil {
+				c.Close()
+				return
+			}
+		}
+	}
 }
 
 // Writable reports whether the Conn may drive the session.
@@ -65,15 +93,18 @@ func (c *Conn) Recv(ctx context.Context) (proto.Envelope, error) {
 	}
 }
 
-// send sends a JSON message.
+// send queues a JSON message to send.
 func (c *Conn) send(m any) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.ws.Write(context.Background(), websocket.MessageText, b)
+	select {
+	case c.out <- b:
+		return nil
+	case <-c.done:
+		return net.ErrClosed
+	}
 }
 
 // Input types s into the session.
@@ -119,5 +150,12 @@ func (c *Conn) Ack(seq uint64) error {
 	return c.send(map[string]uint64{"ack": seq})
 }
 
-// Close closes the connection.
-func (c *Conn) Close() error { return c.ws.Close(websocket.StatusNormalClosure, "") }
+// Close closes the connection. Messages still queued aren't sent.
+func (c *Conn) Close() error {
+	var err error
+	c.closeOnce.Do(func() {
+		close(c.done)
+		err = c.ws.Close(websocket.StatusNormalClosure, "")
+	})
+	return err
+}

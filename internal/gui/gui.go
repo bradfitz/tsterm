@@ -91,6 +91,18 @@ func Run(fa fyne.App, host string) {
 	a.win.ShowAndRun()
 }
 
+// button returns a button that runs fn, then gives the keyboard back to
+// the terminal, if a session is shown: buttons take the focus when
+// clicked, which would leave typing going to them.
+func (a *App) button(text string, fn func()) *widget.Button {
+	return widget.NewButton(text, func() {
+		fn()
+		if a.id != "" {
+			a.win.Canvas().Focus(a.term)
+		}
+	})
+}
+
 // darkTheme is Fyne's theme, always dark, as a terminal is.
 type darkTheme struct{ fyne.Theme }
 
@@ -102,14 +114,14 @@ func (a *App) build() {
 	a.term = newTerm(a)
 	a.status = widget.NewLabel("")
 	a.status.Importance = widget.LowImportance
-	a.modeBtn = widget.NewButton("", a.toggleWritable)
-	a.fitBtn = widget.NewButton("⇲ auto-fit", func() { a.setAutoFit(!a.autoFit) })
-	a.fitOnce = widget.NewButton("fit once", func() { a.fit(true, !a.autoFit) })
-	a.closeBtn = widget.NewButton("✕ close", func() { a.closeTab(a.id) })
+	a.modeBtn = a.button("", a.toggleWritable)
+	a.fitBtn = a.button("⇲ auto-fit", func() { a.setAutoFit(!a.autoFit) })
+	a.fitOnce = a.button("fit once", func() { a.fit(true, !a.autoFit) })
+	a.closeBtn = a.button("✕ close", func() { a.closeTab(a.id) })
 	a.closeBtn.Hide()
 	a.tabs = container.NewHBox()
 	a.tabScroll = container.NewHScroll(a.tabs)
-	sessionsBtn := widget.NewButton("☰ sessions", a.showList)
+	sessionsBtn := a.button("☰ sessions", a.showList)
 	right := container.NewHBox(a.status, a.fitOnce, a.fitBtn, a.modeBtn, a.closeBtn)
 	top := container.NewBorder(nil, nil, sessionsBtn, right, a.tabScroll)
 	a.toasts = container.NewVBox()
@@ -132,8 +144,15 @@ func (a *App) askHost() {
 			}
 			a.connectHost(strings.TrimSpace(e.Text))
 		}, a.win)
-	d.Resize(fyne.NewSize(420, 160))
+	showForm(a.win, d, e)
+}
+
+// showForm shows the form d, ready for typing into e, which Enter submits.
+func showForm(win fyne.Window, d *dialog.FormDialog, e *widget.Entry) {
+	e.OnSubmitted = func(string) { d.Submit() }
+	d.Resize(fyne.NewSize(420, d.MinSize().Height))
 	d.Show()
+	win.Canvas().Focus(e)
 }
 
 // connectHost starts using the tstermd at host: it shows the session the
@@ -357,7 +376,7 @@ func (a *App) apply(env proto.Envelope) {
 	}
 	if ch.Seq != 0 {
 		conn, seq := a.conn, ch.Seq
-		go conn.Ack(seq)
+		conn.Ack(seq)
 	}
 }
 
@@ -368,7 +387,7 @@ func (a *App) loadHistory() {
 	}
 	if from, count, ok := a.hist.Next(a.term.nearTop(), a.term.pinned()); ok {
 		conn := a.conn
-		go conn.History(from, count)
+		conn.History(from, count)
 	}
 }
 
@@ -379,7 +398,7 @@ func (a *App) canType() bool { return a.writable && a.st.Ended == "" && a.conn !
 func (a *App) send(s string) {
 	if a.canType() {
 		conn := a.conn
-		go conn.Input(s)
+		conn.Input(s)
 	}
 }
 
@@ -481,10 +500,9 @@ func (a *App) setAutoFit(on bool) {
 		a.fit(true, false)
 	} else if a.conn != nil {
 		conn := a.conn
-		go conn.Resize(0, 0, false)
+		conn.Resize(0, 0, false)
 	}
 	a.showMode()
-	a.win.Canvas().Focus(a.term)
 }
 
 // fit tells the server the size the view holds, if auto-fit is on or once;
@@ -494,13 +512,10 @@ func (a *App) fit(lead, once bool) {
 		return
 	}
 	rows, cols := a.term.fitSize()
-	conn := a.conn
-	go func() {
-		conn.Resize(rows, cols, lead)
-		if once {
-			conn.Resize(0, 0, false)
-		}
-	}()
+	a.conn.Resize(rows, cols, lead)
+	if once {
+		a.conn.Resize(0, 0, false)
+	}
 }
 
 // termResized is called when the terminal view changes size.
@@ -576,9 +591,9 @@ func (a *App) renderTabs() {
 		}
 	}
 	if other > 0 {
-		objs = append(objs, widget.NewButton(fmt.Sprintf("Other (%d)", other), a.showList))
+		objs = append(objs, a.button(fmt.Sprintf("Other (%d)", other), a.showList))
 	}
-	add := widget.NewButton("+", func() { a.newSession("") })
+	add := a.button("+", func() { a.newSession("") })
 	objs = append(objs, add)
 	a.tabs.Objects = objs
 	a.tabs.Refresh()
@@ -591,7 +606,7 @@ func (a *App) tab(s proto.SessionSummary) fyne.CanvasObject {
 	if !s.Active {
 		name += " (ended)"
 	}
-	b := widget.NewButton(name, func() {
+	b := a.button(name, func() {
 		if s.ID != a.id {
 			a.switchTo(s.ID, s.Name)
 		}
@@ -601,7 +616,7 @@ func (a *App) tab(s proto.SessionSummary) fyne.CanvasObject {
 	} else {
 		b.Importance = widget.LowImportance
 	}
-	x := widget.NewButton("×", func() { a.closeTab(s.ID) })
+	x := a.button("×", func() { a.closeTab(s.ID) })
 	x.Importance = widget.LowImportance
 	return container.NewHBox(b, x)
 }
@@ -665,7 +680,8 @@ func (a *App) newSession(name string) {
 func (a *App) rename(id, name string) {
 	e := widget.NewEntry()
 	e.SetText(name)
-	dialog.ShowForm("Rename session", "Rename", "Cancel", []*widget.FormItem{widget.NewFormItem("Name", e)},
+	e.SetPlaceHolder("no name")
+	d := dialog.NewForm("Rename session", "Rename", "Cancel", []*widget.FormItem{widget.NewFormItem("Name", e)},
 		func(ok bool) {
 			if !ok {
 				return
@@ -686,4 +702,5 @@ func (a *App) rename(id, name string) {
 				a.refreshSessions()
 			}()
 		}, a.win)
+	showForm(a.win, d, e)
 }
