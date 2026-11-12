@@ -858,11 +858,9 @@ areaEl.addEventListener("scroll", () => {
 
 // The view-only switch.
 const modeEl = document.getElementById("mode");
-const deleteEl = document.getElementById("delete");
-let deleteTimer; // until a click to delete needs confirming again
+const closeEndedEl = document.getElementById("closeended");
 function showMode() {
-  deleteEl.hidden = !ended;
-  unconfirmDelete();
+  closeEndedEl.hidden = !ended;
   modeEl.textContent = writable ? "⌨ typing" : "👁 view-only";
   modeEl.title = writable ? "Click to stop typing into the session" : "Click to type into the session";
   modeEl.hidden = !!ended;
@@ -1033,45 +1031,54 @@ notifyEl.addEventListener("click", async () => {
 });
 showNotifyButton();
 
-// The tab bar: the most recently active sessions, refreshed periodically,
-// and a button to start a new one.
+// The tab bar: the user's open set of sessions, live or ended, which every
+// device shares, in the order they were opened, each with a button to close
+// its tab, which leaves the session running; then Other, a link to the
+// session list counting the closed sessions still running; and a button
+// to start a new session. Arriving at a closed session reopens it.
 const tabsEl = document.getElementById("tabs");
-const maxTabs = 12;
+let otherCount = 0; // closed sessions still running
+let reopenSelf = true; // whether to reopen this session if it's closed
 
 // tabLabel names a session for its tab: its name, or the start of its ID.
 function tabLabel(s) {
   return s.name || s.id.slice(0, "pty-".length + 4);
 }
 
+// setClosed moves the session id out of the open set, or into it.
+function setClosed(id, closed) {
+  return fetch(`/v1/sessions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json", "Accept": "application/json"},
+    body: JSON.stringify({closed}),
+  });
+}
+
 async function refreshTabs() {
   if (tabsEl.querySelector("input")) return; // renaming
   let list;
   try {
-    const resp = await fetch("/v1/sessions?sort=activity", {headers: {"Accept": "application/json"}});
+    const resp = await fetch("/v1/sessions", {headers: {"Accept": "application/json"}});
     if (!resp.ok) return;
     list = await resp.json();
   } catch {
     return;
   }
   if (tabsEl.querySelector("input")) return;
-  const shown = list.filter(s => s.active).slice(0, maxTabs);
   const self = list.find(s => s.id === sessionID);
-  if (self && !shown.includes(self)) shown.unshift(self);
-  const tabs = shown.map(s => {
-    if (s.id === sessionID) return currentTab(tabLabel(s));
-    const el = document.createElement("a");
-    el.textContent = tabLabel(s);
-    el.title = s.id + (s.name ? ` (${s.name})` : "");
-    el.href = `/s/${encodeURIComponent(s.id)}`;
-    el.dataset.id = s.id;
-    el.dataset.name = s.name || "";
-    el.addEventListener("click", (ev) => {
-      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return; // a new tab or window
-      ev.preventDefault();
-      switchTo(s.id, s.name || "", true);
-    });
-    return el;
-  });
+  if (reopenSelf && self) {
+    reopenSelf = false;
+    if (self.closed) {
+      self.closed = false;
+      self.opened = new Date().toISOString();
+      setClosed(sessionID, false);
+    }
+  }
+  const opened = s => Date.parse(s.opened || s.created);
+  const open = list.filter(s => !s.closed).sort((a, b) => opened(a) - opened(b));
+  if (self && !open.includes(self)) open.push(self);
+  otherCount = list.filter(s => s.closed && s.active).length;
+
   const add = document.createElement("button");
   add.textContent = "+";
   add.title = "New session (shift-click for the demo)";
@@ -1079,7 +1086,7 @@ async function refreshTabs() {
     fitOnConnect = true;
     switchTo(id, name, true);
   }));
-  tabsEl.replaceChildren(...tabs, add);
+  tabsEl.replaceChildren(...open.map(s => s.id === sessionID ? currentTab(s) : otherTab(s)), otherLink(), add);
   if (!tabsScrolled) {
     tabsScrolled = true;
     tabsEl.querySelector(".current")?.scrollIntoView({inline: "nearest", block: "nearest"});
@@ -1088,25 +1095,153 @@ async function refreshTabs() {
 }
 let tabsScrolled = false;
 
-// currentTab returns the tab for this session, which renames it when
-// double-clicked.
-function currentTab(label) {
+// tab returns a tab for the session s, and its close button.
+function tab(s) {
   const el = document.createElement("span");
-  el.className = "current";
-  el.textContent = label;
-  el.title = "Double-click to rename";
-  el.addEventListener("dblclick", () => {
-    if (el.querySelector("input")) return;
-    startRename(el, sessionID, sessionName, (name) => {
+  el.className = "tab" + (s.active ? "" : " ended");
+  el.dataset.id = s.id;
+  el.dataset.name = s.name || "";
+  if (s.active) el.dataset.active = "1";
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "x";
+  x.textContent = "×";
+  x.title = s.active
+    ? "Close this tab. The session keeps running; find it under Other."
+    : "Close this tab. The ended session is kept, in the session list.";
+  x.addEventListener("mousedown", (ev) => ev.preventDefault()); // keep the focus
+  x.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeTab(el);
+  });
+  return [el, x];
+}
+
+// otherTab returns the tab for another session, which switches to it.
+function otherTab(s) {
+  const [el, x] = tab(s);
+  const a = document.createElement("a");
+  a.textContent = tabLabel(s);
+  a.title = s.id + (s.name ? ` (${s.name})` : "") + (s.active ? "" : ", ended");
+  a.href = `/s/${encodeURIComponent(s.id)}`;
+  a.addEventListener("click", (ev) => {
+    if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return; // a new tab or window
+    ev.preventDefault();
+    switchTo(s.id, s.name || "", true);
+  });
+  el.append(a, x);
+  return el;
+}
+
+// currentTab returns the tab for this session, which renames it when its
+// name is double-clicked.
+function currentTab(s) {
+  const [el, x] = tab(s);
+  el.classList.add("current");
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = tabLabel(s);
+  label.title = "Double-click to rename";
+  label.addEventListener("dblclick", () => {
+    if (label.querySelector("input")) return;
+    startRename(label, sessionID, sessionName, (name) => {
       sessionName = name;
-      el.textContent = name || tabLabel({id: sessionID});
+      label.textContent = name || tabLabel({id: sessionID});
       document.title = `${name || sessionID} · tsterm`;
       refreshTabs();
     });
   });
+  el.append(label, x);
   return el;
 }
-tabsEl.replaceChildren(currentTab(sessionName || tabLabel({id: sessionID})));
+tabsEl.replaceChildren(currentTab({id: sessionID, name: sessionName, active: true}));
+
+// otherLink returns the link to the session list, counting the closed
+// sessions still running, and hidden if there are none.
+function otherLink() {
+  const a = document.createElement("a");
+  a.id = "other";
+  a.className = "tab other";
+  a.href = "/#running";
+  a.title = "Sessions whose tabs are closed, still running";
+  a.textContent = `Other (${otherCount})`;
+  a.hidden = otherCount === 0;
+  return a;
+}
+
+// closeTab closes the tab el, which leaves its session running, or kept
+// if it has ended. A running session's tab flies into Other, whose count
+// goes up, to show where it went. If it was this session's tab, the page
+// then shows the next tab's session, to the right or else the left, or
+// else the session list.
+async function closeTab(el) {
+  const isCurrent = el.classList.contains("current");
+  let next = null;
+  if (isCurrent) {
+    next = el.nextElementSibling;
+    if (!next || !next.dataset.id) next = el.previousElementSibling;
+    if (next && !next.dataset.id) next = null;
+  }
+  const resp = await setClosed(el.dataset.id, true);
+  if (!resp.ok) {
+    alert(`Can't close: ${resp.statusText}`);
+    return;
+  }
+  if (el.dataset.active) await flyToOther(el);
+  else await fadeOut(el);
+  el.remove();
+  if (!isCurrent) {
+    showTabsOverflow();
+    return;
+  }
+  if (next) switchTo(next.dataset.id, next.dataset.name, "replace");
+  else location.replace("/#running");
+}
+
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+// flyToOther animates a copy of the tab el into Other, then counts it.
+function flyToOther(el) {
+  const other = document.getElementById("other");
+  const bump = () => {
+    otherCount++;
+    other.textContent = `Other (${otherCount})`;
+    other.hidden = false;
+    if (!reducedMotion.matches) {
+      other.animate([{transform: "scale(1)"}, {transform: "scale(1.3)", color: "#8c8"}, {transform: "scale(1)"}], {duration: 400, easing: "ease-out"});
+    }
+  };
+  if (!other || reducedMotion.matches) {
+    if (other) bump();
+    return Promise.resolve();
+  }
+  const from = el.getBoundingClientRect();
+  other.hidden = false; // still with the count before
+  other.scrollIntoView({inline: "nearest", block: "nearest"});
+  const to = other.getBoundingClientRect();
+  const ghost = el.cloneNode(true);
+  ghost.classList.add("ghost");
+  Object.assign(ghost.style, {left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`});
+  document.body.append(ghost);
+  el.style.visibility = "hidden";
+  const dx = to.left + to.width / 2 - (from.left + from.width / 2);
+  const dy = to.top + to.height / 2 - (from.top + from.height / 2);
+  const anim = ghost.animate([
+    {transform: "none", opacity: 1},
+    {transform: `translate(${dx}px, ${dy}px) scale(.35)`, opacity: .4},
+  ], {duration: 450, easing: "cubic-bezier(.55, 0, .75, .2)"});
+  return anim.finished.then(() => {
+    ghost.remove();
+    bump();
+  });
+}
+
+// fadeOut fades the tab el away.
+function fadeOut(el) {
+  if (reducedMotion.matches) return Promise.resolve();
+  return el.animate([{opacity: 1}, {opacity: 0}], {duration: 200}).finished;
+}
 
 // showTabsOverflow marks the ends of the tabs that have more to scroll to.
 function showTabsOverflow() {
@@ -1134,6 +1269,7 @@ function switchTo(id, name, push) {
   screenEl.replaceChildren();
   resetHistory();
   statusEl.textContent = "connecting…";
+  reopenSelf = true;
   reconnect();
   refreshTabs();
 }
@@ -1143,32 +1279,10 @@ window.addEventListener("popstate", (ev) => {
   else location.reload();
 });
 
-// An ended session can be deleted, with a second click to confirm, and
-// the page then shows the next tab's session, to the right or else the
-// left, or else the list of sessions.
-function unconfirmDelete() {
-  clearTimeout(deleteTimer);
-  deleteEl.classList.remove("confirm");
-  deleteEl.textContent = "🗑 delete";
-}
-deleteEl.addEventListener("click", async () => {
-  if (!deleteEl.classList.contains("confirm")) {
-    deleteEl.classList.add("confirm");
-    deleteEl.textContent = "🗑 click again to delete";
-    deleteTimer = setTimeout(unconfirmDelete, 3000);
-    return;
-  }
-  unconfirmDelete();
-  const resp = await fetch(`/v1/sessions/${encodeURIComponent(sessionID)}`, {method: "DELETE"});
-  if (!resp.ok) {
-    alert(`Can't delete: ${resp.statusText}`);
-    return;
-  }
+// An ended session's header has a button to close its tab.
+closeEndedEl.addEventListener("click", () => {
   const cur = tabsEl.querySelector(".current");
-  let next = cur && cur.nextElementSibling;
-  if (!next || next.tagName !== "A") next = cur && cur.previousElementSibling;
-  if (next && next.tagName === "A") switchTo(next.dataset.id, next.dataset.name, "replace");
-  else location.replace("/");
+  if (cur) closeTab(cur);
 });
 
 // The wheel scrolls the tabs sideways.

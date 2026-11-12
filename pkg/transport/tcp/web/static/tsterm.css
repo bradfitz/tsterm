@@ -21,16 +21,27 @@ nav#tabs::-webkit-scrollbar { display: none; }
 nav#tabs.more-left { mask-image: linear-gradient(to right, transparent, #000 1.5rem); }
 nav#tabs.more-right { mask-image: linear-gradient(to left, transparent, #000 1.5rem); }
 nav#tabs.more-left.more-right { mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent); }
-nav#tabs a, nav#tabs span { padding: .1rem .5rem; border-radius: .3rem; text-decoration: none; color: #aaa; flex-shrink: 0; }
-nav#tabs .current { cursor: text; }
+/* A tab is its label, then a close button, shown on hover, and always on
+   the current tab. Ended sessions' tabs are dim. */
+nav#tabs .tab { display: inline-flex; align-items: center; border-radius: .3rem; color: #aaa; flex-shrink: 0; }
+nav#tabs .tab[hidden] { display: none; }
+nav#tabs .tab > a, nav#tabs .tab > .label { padding: .1rem .1rem .1rem .5rem; text-decoration: none; color: inherit; }
+nav#tabs .tab:hover { background: #333; color: #fff; }
+nav#tabs .tab.current { background: #444; color: #fff; }
+nav#tabs .tab.current .label { cursor: text; }
+nav#tabs .tab.ended { font-style: italic; color: #777; }
+nav#tabs .tab.current.ended { color: #bbb; }
+nav#tabs .tab .x { font: inherit; padding: 0 .35rem; border: 0; background: none; color: inherit; cursor: pointer; opacity: 0; border-radius: .3rem; }
+nav#tabs .tab:hover .x, nav#tabs .tab.current .x { opacity: .6; }
+nav#tabs .tab .x:hover { opacity: 1; background: #555; }
+nav#tabs .tab.other { padding: .1rem .5rem; text-decoration: none; color: #888; }
 nav#tabs input { font: inherit; }
-nav#tabs a:hover { background: #333; color: #fff; }
-nav#tabs .current { background: #444; color: #fff; }
-nav#tabs button { font: inherit; flex-shrink: 0; padding: 0 .5rem; color: #aaa; background: none; border: 1px solid #444; border-radius: .3rem; cursor: pointer; }
-nav#tabs button:hover { color: #fff; border-color: #888; }
+nav#tabs > button { font: inherit; flex-shrink: 0; padding: 0 .5rem; color: #aaa; background: none; border: 1px solid #444; border-radius: .3rem; cursor: pointer; }
+nav#tabs > button:hover { color: #fff; border-color: #888; }
+/* A closed tab, flying into Other. */
+.ghost { position: fixed; margin: 0; z-index: 20; pointer-events: none; font-size: .85rem; background: #444; color: #fff; }
 body.viewer header button { font: inherit; color: #ccc; background: #333; border: 0; border-radius: .3rem; padding: .1rem .5rem; cursor: pointer; }
 body.viewer header button:hover { background: #444; color: #fff; }
-body.viewer header button#delete.confirm { background: #a33; color: #fff; }
 form#new { margin: 0 0 1rem; display: flex; gap: .5rem; }
 form#new input, form#new button { font: inherit; padding: .3rem .6rem; }
 
@@ -153,3 +164,7 @@ body.viewer header { flex-shrink: 0; }
   table th:nth-child(7), table td:nth-child(7) { display: none; }
   table td code { font-size: .8em; }
 }
+
+/* The session list: rows of sessions whose tabs are closed are dim. */
+tr.closed td { color: var(--dim); }
+h2 { font-weight: 600; font-size: 1.1rem; margin-top: 1.5rem; }

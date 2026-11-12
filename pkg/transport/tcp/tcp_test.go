@@ -3,15 +3,19 @@ package tcp
 import (
 	"bytes"
 	"context"
+	"encoding/json/v2"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bradfitz/tsterm/pkg/auth"
 	"github.com/bradfitz/tsterm/pkg/proto"
+	"github.com/bradfitz/tsterm/pkg/pty"
+	"github.com/bradfitz/tsterm/pkg/session"
 	"github.com/bradfitz/tsterm/pkg/session/sessiontest"
 
 	"tailscale.com/client/tailscale/apitype"
@@ -204,5 +208,82 @@ func TestServeContextShutdown(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("Serve did not return after cancel")
+	}
+}
+
+func TestCloseAndPurge(t *testing.T) {
+	srv, hts := newTestServer(t, &allowAllLC{user: 42})
+	cfg := sleepCfg()
+	cfg.Name = "bar"
+	sess, err := srv.Manager.Create(session.Config{Name: "bar", PTY: pty.Config{Command: cfg.Cmd[0], Args: cfg.Cmd[1:]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func(method, path, body string) int {
+		t.Helper()
+		r, _ := http.NewRequest(method, hts.URL+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json")
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	summary := func() proto.SessionSummary {
+		t.Helper()
+		r, _ := http.NewRequest("GET", hts.URL+"/v1/sessions", nil)
+		r.Header.Set("Accept", "application/json")
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var list []proto.SessionSummary
+		b, _ := io.ReadAll(resp.Body)
+		json.Unmarshal(b, &list)
+		for _, s := range list {
+			if s.ID == string(sess.ID()) {
+				return s
+			}
+		}
+		t.Fatal("session not listed")
+		return proto.SessionSummary{}
+	}
+
+	if code := do("PATCH", "/v1/sessions/bar", `{"closed": true}`); code != 200 {
+		t.Fatalf("PATCH closed: %d", code)
+	}
+	if s := summary(); !s.Closed || !s.Active || len(s.Cmd) != 3 {
+		t.Errorf("closed session listed as %+v", s)
+	}
+	do("PATCH", "/v1/sessions/bar", `{"closed": false}`)
+	if s := summary(); s.Closed {
+		t.Error("reopened session still closed")
+	}
+
+	// DELETE ends it, keeping it frozen, and again is a no-op.
+	for range 2 {
+		if code := do("DELETE", "/v1/sessions/"+string(sess.ID()), ""); code != http.StatusNoContent {
+			t.Fatalf("DELETE: %d", code)
+		}
+	}
+	if s := summary(); s.Active || s.Status == "" || s.Name != "bar" {
+		t.Errorf("ended session listed as %+v", s)
+	}
+	// Ended, it can still be closed.
+	if code := do("PATCH", "/v1/sessions/"+string(sess.ID()), `{"closed": true}`); code != http.StatusNoContent {
+		t.Errorf("PATCH closed on an ended session: %d", code)
+	}
+	if s := summary(); !s.Closed {
+		t.Error("ended session not closed")
+	}
+	// Only purging deletes it.
+	if code := do("DELETE", "/v1/sessions/"+string(sess.ID())+"?purge=1", ""); code != http.StatusNoContent {
+		t.Fatalf("purge: %d", code)
+	}
+	if srv.Manager.Frozen(string(sess.ID())) != nil {
+		t.Error("purged session still frozen")
 	}
 }

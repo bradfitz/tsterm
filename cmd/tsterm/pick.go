@@ -81,6 +81,9 @@ func formatList(sessions []proto.SessionSummary) string {
 			if !s.LastActivity.IsZero() {
 				state = "active " + time.Since(s.LastActivity).Round(time.Second).String() + " ago"
 			}
+			if s.Closed {
+				state += ", tab closed"
+			}
 		}
 		fmt.Fprintf(&b, "%-30s %-12s %-8s %-20s watchers=%d\n",
 			s.ID, name, fmt.Sprintf("%dx%d", s.Cols, s.Rows), state, s.Watchers)

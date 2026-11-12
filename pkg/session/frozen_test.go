@@ -103,12 +103,9 @@ func TestKillFreezesAndRemoveDeletes(t *testing.T) {
 }
 
 func TestFrozenRetention(t *testing.T) {
-	old := maxFrozen
-	maxFrozen = 2
-	t.Cleanup(func() { maxFrozen = old })
 	m, _ := newTestManager(t)
 	var ids []ID
-	for range 3 {
+	for range 4 {
 		s, err := m.Create(makeCfg("true"))
 		if err != nil {
 			t.Fatal(err)
@@ -116,14 +113,82 @@ func TestFrozenRetention(t *testing.T) {
 		waitFrozen(t, m, s.ID())
 		ids = append(ids, s.ID())
 	}
-	if m.Frozen(string(ids[0])) != nil {
-		t.Error("oldest frozen session kept")
+	kept := func(i int) bool {
+		_, err := os.Stat(m.sessionDir(ids[i]))
+		return m.Frozen(string(ids[i])) != nil && err == nil
 	}
-	if m.Frozen(string(ids[1])) == nil || m.Frozen(string(ids[2])) == nil {
-		t.Error("newest frozen sessions not kept")
+
+	// One that ended over a year ago goes.
+	m.mu.Lock()
+	m.frozen[ids[0]].Ended = time.Now().Add(-maxFrozenAge - time.Hour)
+	m.pruneFrozenLocked()
+	m.mu.Unlock()
+	if kept(0) || !kept(1) {
+		t.Errorf("after aging: kept %v, %v", kept(0), kept(1))
 	}
-	if _, err := os.Stat(m.sessionDir(ids[0])); !os.IsNotExist(err) {
-		t.Errorf("oldest frozen session's directory: %v", err)
+
+	// Over the size limit, the oldest go until it fits.
+	old := maxFrozenBytes
+	t.Cleanup(func() { maxFrozenBytes = old })
+	m.mu.Lock()
+	maxFrozenBytes = m.frozen[ids[2]].size + m.frozen[ids[3]].size
+	m.pruneFrozenLocked()
+	m.mu.Unlock()
+	if kept(1) || !kept(2) || !kept(3) {
+		t.Errorf("after shrinking: kept %v, %v, %v", kept(1), kept(2), kept(3))
+	}
+}
+
+func TestClosedSessions(t *testing.T) {
+	m, l := newTestManager(t)
+	cfg := makeCfg("echo hi; sleep 30")
+	cfg.Name = "bg"
+	s, err := m.Create(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed, opened := s.Closed(); closed || opened.IsZero() {
+		t.Errorf("new session: closed %v, opened %v", closed, opened)
+	}
+	if err := m.SetClosed("bg", true); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Active() {
+		t.Fatal("closing ended the session")
+	}
+
+	// It stays closed across a tstermd restart.
+	m.Detach()
+	m2 := NewManager(m.dir, l)
+	m2.SetStateDir(m.stateDir)
+	t.Cleanup(func() { m2.Close() })
+	m2.Restore(context.Background())
+	s2 := m2.ByName("bg")
+	if s2 == nil {
+		t.Fatal("not restored")
+	}
+	if closed, _ := s2.Closed(); !closed {
+		t.Error("restored session isn't closed")
+	}
+	before := time.Now()
+	m2.SetClosed("bg", false)
+	if closed, opened := s2.Closed(); closed || opened.Before(before) {
+		t.Errorf("reopened: closed %v, opened %v", closed, opened)
+	}
+
+	// Frozen, it keeps its name, command, and state, and can be closed.
+	m2.Kill("bg")
+	f := waitFrozen(t, m2, s.ID())
+	if f.Name != "bg" || len(f.Cmd) != 3 || f.Cmd[2] != "echo hi; sleep 30" || f.Closed || f.Created.IsZero() || f.Ended.IsZero() || f.Status != "signal: killed" {
+		t.Errorf("frozen = %+v", f)
+	}
+	if err := m2.SetClosed(string(s.ID()), true); err != nil {
+		t.Fatal(err)
+	}
+	// Its info on disk says so too.
+	f2, err := loadFrozen(m2.sessionDir(s.ID()))
+	if err != nil || !f2.Closed || f2.Name != "bg" || f2.Status != "signal: killed" {
+		t.Errorf("frozen from disk = %+v, %v", f2, err)
 	}
 }
 

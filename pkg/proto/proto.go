@@ -196,6 +196,14 @@ type SessionSummary struct {
 	// frozen, to look at: when it ended, and how (see session.Frozen).
 	Ended  time.Time `cbor:"e,omitempty" json:"ended,omitzero"`
 	Status string    `cbor:"s,omitempty" json:"status,omitzero"`
+
+	Cmd []string `cbor:"cmd,omitempty" json:"cmd,omitzero"` // the command, if not the login shell
+
+	// Closed is set if the session is out of the user's open set (see
+	// UpdateSessionReq); Opened is when it last joined it, which orders
+	// the open set.
+	Closed bool      `cbor:"cl,omitempty" json:"closed,omitzero"`
+	Opened time.Time `cbor:"op,omitempty" json:"opened,omitzero"`
 }
 
 // CreateSessionReq is the body of POST /v1/sessions.
@@ -213,6 +221,11 @@ type UpdateSessionReq struct {
 	// Name, if non-nil, renames the session; the empty string removes
 	// its name.
 	Name *string `cbor:"name,omitempty" json:"name,omitzero"`
+
+	// Closed, if non-nil, moves the session, live or ended, out of the
+	// user's open set (the sessions they have tabs for), or into it. A
+	// closed session runs on.
+	Closed *bool `cbor:"closed,omitempty" json:"closed,omitzero"`
 }
 
 // SessionInfo is returned by POST /v1/sessions and by GET /v1/sessions/{id}.

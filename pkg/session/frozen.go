@@ -32,6 +32,10 @@ type Frozen struct {
 
 	LastInput, LastOutput, LastAttach time.Time
 
+	Cmd    []string  // the command, or nil for the login shell
+	Closed bool      // out of the open set (see Manager.SetClosed)
+	Opened time.Time // when it last joined the open set
+
 	dir  string
 	size int64 // of dir, roughly
 }
@@ -63,6 +67,28 @@ type info struct {
 	// Ended and Status are set when the session ends (see Frozen).
 	Ended  time.Time `json:"ended,omitzero"`
 	Status string    `json:"status,omitzero"`
+
+	Cmd    []string  `json:"cmd,omitzero"`
+	Closed bool      `json:"closed,omitzero"`
+	Opened time.Time `json:"opened,omitzero"`
+}
+
+// info returns f's info, to save.
+func (f *Frozen) info() info {
+	return info{
+		Name: f.Name, Created: f.Created,
+		LastInput: f.LastInput, LastOutput: f.LastOutput, LastAttach: f.LastAttach,
+		Ended: f.Ended, Status: f.Status,
+		Cmd: f.Cmd, Closed: f.Closed, Opened: f.Opened,
+	}
+}
+
+func saveInfoFile(dir string, in info) error {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return writeFileSync(filepath.Join(dir, infoFile), b)
 }
 
 // saveInfo records the session's info in its directory, with ended and
@@ -79,14 +105,12 @@ func (s *Session) saveInfo(ended time.Time, status string) {
 		LastAttach: s.LastAttach(),
 		Ended:      ended,
 		Status:     status,
+		Cmd:        s.Cmd(),
 	}
-	b, err := json.Marshal(in)
-	if err != nil {
-		return
-	}
+	in.Closed, in.Opened = s.Closed()
 	s.infoMu.Lock()
 	defer s.infoMu.Unlock()
-	if err := writeFileSync(filepath.Join(s.dir, infoFile), b); err != nil {
+	if err := saveInfoFile(s.dir, in); err != nil {
 		s.logf("session %s: saving info: %v", s.id, err)
 	}
 }
@@ -105,7 +129,11 @@ func endStatus(waitErr error) string {
 
 // frozen returns the Frozen form of s, which has ended.
 func (s *Session) frozen() *Frozen {
+	closed, opened := s.Closed()
 	return &Frozen{
+		Cmd:        s.Cmd(),
+		Closed:     closed,
+		Opened:     opened,
 		ID:         s.id,
 		Name:       s.Name(),
 		Created:    s.created,
@@ -138,8 +166,14 @@ func loadFrozen(dir string) (*Frozen, error) {
 		LastInput:  in.LastInput,
 		LastOutput: in.LastOutput,
 		LastAttach: in.LastAttach,
+		Cmd:        in.Cmd,
+		Closed:     in.Closed,
+		Opened:     in.Opened,
 		dir:        dir,
 		size:       dirSize(dir),
+	}
+	if f.Opened.IsZero() {
+		f.Opened = f.Created
 	}
 	if f.Status == "" {
 		// It never ended, as far as anyone saw.
@@ -167,11 +201,12 @@ func dirSize(dir string) int64 {
 	return n
 }
 
-// Retention of frozen sessions: the newest maxFrozen, as long as they take
-// no more than maxFrozenBytes together. Tests lower them.
+// Retention of frozen sessions: those that ended within maxFrozenAge, as
+// long as they take no more than maxFrozenBytes together, the oldest going
+// first. Live sessions are always kept. Tests lower these.
 var (
-	maxFrozen            = 100
-	maxFrozenBytes int64 = 2 << 30
+	maxFrozenAge         = 365 * 24 * time.Hour
+	maxFrozenBytes int64 = 10 << 30
 )
 
 // loadFrozenLocked adds the frozen sessions in the Manager's state
@@ -209,7 +244,7 @@ func (m *Manager) pruneFrozenLocked() {
 		total += f.size
 	}
 	slices.SortFunc(all, func(a, b *Frozen) int { return a.Ended.Compare(b.Ended) })
-	for len(all) > 0 && (len(all) > maxFrozen || total > maxFrozenBytes) {
+	for len(all) > 0 && (time.Since(all[0].Ended) > maxFrozenAge || total > maxFrozenBytes) {
 		f := all[0]
 		all = all[1:]
 		total -= f.size
@@ -240,6 +275,29 @@ func (m *Manager) Frozen(idOrName string) *Frozen {
 		}
 	}
 	return newest
+}
+
+// SetClosed moves the session, live or frozen, with the given ID or name
+// out of the user's open set, the sessions they have tabs for, or into it.
+// A closed session runs on; it's just out of the way.
+func (m *Manager) SetClosed(idOrName string, closed bool) error {
+	if s, err := m.Resolve(idOrName); err == nil {
+		return s.setClosed(closed)
+	}
+	f := m.Frozen(idOrName)
+	if f == nil {
+		return ErrNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if f.Closed == closed {
+		return nil
+	}
+	f.Closed = closed
+	if !closed {
+		f.Opened = time.Now()
+	}
+	return saveInfoFile(f.dir, f.info())
 }
 
 // Remove deletes the frozen session with the given ID or name, and all

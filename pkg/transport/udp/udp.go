@@ -256,6 +256,10 @@ func (m *mux) attach(addr netip.AddrPort, h *proto.Hello) {
 		}
 	}
 	m.remember(sess, addr, h.Nonce)
+	// Attaching is wanting to see it: it's open again, if it was closed.
+	if err := m.srv.Manager.SetClosed(string(sess.ID()), false); err != nil {
+		m.srv.Logf("udp: reopening %s: %v", sess.ID(), err)
+	}
 	if err := sess.MarkAttached(); err != nil {
 		m.srv.Logf("udp: recording attach: %v", err)
 	}

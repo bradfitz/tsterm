@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/bradfitz/tsterm/pkg/session"
@@ -35,14 +36,19 @@ type indexRow struct {
 	ID, Name, Size, Age string
 	Activity, Attach    string // how long ago
 	Watchers            int
+	Closed              bool // its tab is closed
 }
 
 // endedRow is a frozen session on the index page.
 type endedRow struct {
-	ID, Name, Status string
-	Ended            string // how long ago
-	ended            time.Time
+	ID, Name, Status, Cmd string
+	Age, Ended            string // how long ago
+	Closed                bool
+	ended                 time.Time
 }
+
+// maxEndedRows bounds the ended sessions the index page lists.
+const maxEndedRows = 100
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	summaries := s.Manager.List()
@@ -53,7 +59,10 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	var ended []endedRow
 	for _, sm := range summaries {
 		if !sm.Ended.IsZero() || sm.Status != "" {
-			ended = append(ended, endedRow{ID: string(sm.ID), Name: sm.Name, Status: sm.Status, Ended: ago(sm.Ended), ended: sm.Ended})
+			ended = append(ended, endedRow{
+				ID: string(sm.ID), Name: sm.Name, Status: sm.Status, Cmd: strings.Join(sm.Cmd, " "),
+				Age: ago(sm.Created), Ended: ago(sm.Ended), Closed: sm.Closed, ended: sm.Ended,
+			})
 			continue
 		}
 		if !sm.Active {
@@ -67,10 +76,13 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			Activity: ago(sm.LastActivity()),
 			Attach:   ago(sm.LastAttach),
 			Watchers: sm.Watchers,
+			Closed:   sm.Closed,
 		})
 	}
 	slices.SortStableFunc(ended, func(a, b endedRow) int { return b.ended.Compare(a.ended) })
-	s.render(w, "index.html", map[string]any{"Live": rows, "Ended": ended})
+	more := len(ended) - maxEndedRows
+	ended = ended[:min(len(ended), maxEndedRows)]
+	s.render(w, "index.html", map[string]any{"Live": rows, "Ended": ended, "MoreEnded": more})
 }
 
 // ago describes how long ago t was, or returns "never" for the zero time.

@@ -78,6 +78,15 @@ type meta struct {
 	// LastAttach is when a client last attached to the session to look
 	// at it. The shim keeps it, in memory, on tstermd's behalf.
 	LastAttach time.Time `json:"lastAttach,omitzero"`
+
+	// Cmd is the command the session runs, if not the login shell.
+	Cmd []string `json:"cmd,omitzero"`
+
+	// Closed is set when the session is out of the user's open set: its
+	// tab is closed, though it runs on. Opened is when it last joined
+	// the set, which orders the tabs; zero means when it was created.
+	Closed bool      `json:"closed,omitzero"`
+	Opened time.Time `json:"opened,omitzero"`
 }
 
 // Client identifies a hot-path client attached to a session.
@@ -337,6 +346,44 @@ func (s *Session) MarkAttached() error {
 	defer s.metaMu.Unlock()
 	s.meta.LastAttach = time.Now()
 	return s.conn.SetMeta(encodeMeta(s.meta))
+}
+
+// Cmd returns the command the session runs, or nil for the login shell.
+func (s *Session) Cmd() []string {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	return s.meta.Cmd
+}
+
+// Closed reports whether the session is out of the user's open set (see
+// Manager.SetClosed), and when it last joined it.
+func (s *Session) Closed() (closed bool, opened time.Time) {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	opened = s.meta.Opened
+	if opened.IsZero() {
+		opened = s.meta.Created
+	}
+	return s.meta.Closed, opened
+}
+
+// setClosed moves the session out of the user's open set, or into it.
+func (s *Session) setClosed(closed bool) error {
+	s.metaMu.Lock()
+	if s.meta.Closed == closed {
+		s.metaMu.Unlock()
+		return nil
+	}
+	s.meta.Closed = closed
+	if !closed {
+		s.meta.Opened = time.Now()
+	}
+	err := s.conn.SetMeta(encodeMeta(s.meta))
+	s.metaMu.Unlock()
+	if err == nil && s.Active() {
+		s.saveInfo(time.Time{}, "")
+	}
+	return err
 }
 
 // LastAttach returns when a client last attached, or the zero time.

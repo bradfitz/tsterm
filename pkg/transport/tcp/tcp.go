@@ -144,6 +144,9 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 			LastAttach:   sm.LastAttach,
 			Ended:        sm.Ended,
 			Status:       sm.Status,
+			Cmd:          sm.Cmd,
+			Closed:       sm.Closed,
+			Opened:       sm.Opened,
 		})
 	}
 	writeResponse(w, r, http.StatusOK, wire)
@@ -213,6 +216,25 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "decode", err.Error())
 		return
 	}
+	if req.Closed != nil {
+		// Live or ended.
+		switch err := s.Manager.SetClosed(r.PathValue("id"), *req.Closed); {
+		case errors.Is(err, session.ErrNotFound):
+			writeError(w, r, http.StatusNotFound, "not_found", err.Error())
+			return
+		case err != nil:
+			writeError(w, r, http.StatusInternalServerError, "close", err.Error())
+			return
+		}
+		if req.Name == nil {
+			if sess, err := s.Manager.Resolve(r.PathValue("id")); err == nil {
+				writeResponse(w, r, http.StatusOK, s.infoFor(sess))
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+	}
 	sess, ok := s.resolveOr404(w, r)
 	if !ok {
 		return
@@ -233,11 +255,17 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, r, http.StatusOK, s.infoFor(sess))
 }
 
-// kill ends a live session, which then freezes, or deletes a frozen one.
+// kill ends a live session, which then freezes. With ?purge=1, it also
+// deletes all that an ended one kept: its screen, history, and info.
 func (s *Server) kill(w http.ResponseWriter, r *http.Request) {
-	err := s.Manager.Kill(r.PathValue("id"))
-	if errors.Is(err, session.ErrNotFound) {
-		err = s.Manager.Remove(r.PathValue("id"))
+	id := r.PathValue("id")
+	err := s.Manager.Kill(id)
+	if r.URL.Query().Get("purge") == "1" {
+		if f := s.Manager.Frozen(id); f != nil || errors.Is(err, session.ErrNotFound) {
+			err = s.Manager.Remove(id)
+		}
+	} else if errors.Is(err, session.ErrNotFound) && s.Manager.Frozen(id) != nil {
+		err = nil // already ended
 	}
 	if err != nil {
 		if errors.Is(err, session.ErrNotFound) {

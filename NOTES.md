@@ -142,6 +142,22 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   hides it on the alternate screen. Cost: writes of `cat`-like output drop
   from ~260 to ~55 MB/s, mixed output from ~144 to ~100 MB/s (formatting
   plus parsing; per-cell glue calls were far slower).
+- **Three properties of a session**, independent: *alive* or frozen (ended);
+  *open* or closed, its membership in the user's open set, the sessions
+  with tabs, shared by every device; and *stored*, which retention decides
+  (live sessions always; ended ones for a year, the oldest going first
+  past 10 GiB in total), or an explicit purge. Closing a tab only takes it
+  out of the open set: the session runs on, and the session list
+  (Running, with a reopen button) and the tab bar's "Other (N)", which
+  counts closed sessions still running, find it again. A closing tab
+  flies into Other, whose count goes up, which shows where it went without
+  any explaining. Visiting a session's page, or attaching with the CLI,
+  reopens it. Tabs are in the order opened (`opened`, kept in the shim's
+  metadata and the session's `info`). PATCH `{"closed": bool}` works on
+  live and ended sessions; DELETE ends a live one, and only `?purge=1`
+  deletes what an ended one kept (the session list's "delete forever",
+  after a confirmation). Each session's `info` keeps its name, command,
+  creation and end times, how it ended, and its open state.
 - **Frozen sessions.** A session that ends (its program exits, or it's
   killed) stays, frozen: listed with when and how it ended (`ended`,
   `status` in the API), and viewable read-only on the web, its last screen
@@ -151,12 +167,10 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   session with status "lost" and the last saved screen. A shim whose
   program exited while no tstermd ran is attached anyway, so its last
   output is read before it freezes. Frozen sessions don't hold their
-  names. DELETE ends a live session (it freezes) or deletes a frozen one;
-  the index lists them under "Ended" with delete buttons, and a frozen
-  session's own page has one in its header (click twice), after which it
-  shows the next tab's session, right or else left. A viewer of a
-  session that ends keeps its connection, for history. The manager keeps
-  the newest 100 frozen sessions, within 2 GB.
+  names. A frozen session's page has a close button in its header, and
+  closing the current tab shows the next tab's session, right or else
+  left. A viewer of a session that ends keeps its connection, for
+  history.
 - **Floods stay interruptible.** As with Mosh, a program spraying output
   (`yes`, `find /`) can't bury a Ctrl-C. The shim reads the PTY only 64 KB
   ahead of what an attached tstermd has taken (the 16 MB limit is for when
@@ -189,8 +203,16 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
 ## Upcoming work
 
 - **Frozen sessions, more.** "Restart" a frozen session in the same
-  directory (needs OSC 7, which libghostty tracks); configurable retention
-  (now the newest 100, within 2 GB); renaming frozen sessions.
+  directory (needs OSC 7, which libghostty tracks); configurable retention;
+  a "keep forever" pin; renaming frozen sessions; paging and search in the
+  session list's Ended section (it shows the newest 100).
+- **Object storage.** Push old history segments and frozen sessions off
+  to object storage (S3 and the like), keeping their index locally and
+  fetching them when looked at; segments never change once written, which
+  suits it. Then retention could be far longer.
+- **Open set, more.** A shared history budget across sessions (now 256 MB
+  each); per-device tab sets, if wanted; dragging tabs to reorder; what a
+  closed session's bell and notifications should do (now nothing).
 - **History, more.** Search in the web UI (`history.Store.Search` scans;
   an index later); virtualize the web viewer's history (it keeps every
   line it has loaded in the DOM); a scroll op in screen diffs (scrolling

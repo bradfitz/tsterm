@@ -37,7 +37,7 @@ func get(t *testing.T, url, accept string) (int, string, string) {
 func TestWebIndexAndViewer(t *testing.T) {
 	srv, hts := newTestServer(t, &allowAllLC{user: 1})
 	code, _, body := get(t, hts.URL+"/", "text/html")
-	if code != 200 || !strings.Contains(body, "No active sessions") {
+	if code != 200 || !strings.Contains(body, "No running sessions") {
 		t.Errorf("empty index: %d %q", code, body)
 	}
 

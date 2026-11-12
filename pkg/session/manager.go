@@ -159,6 +159,9 @@ func (m *Manager) Create(cfg Config) (*Session, error) {
 	}
 	id := newID()
 	md := meta{Name: cfg.Name, Token: randomBytes(32), Created: time.Now()}
+	if cfg.PTY.Command != "" {
+		md.Cmd = append([]string{cfg.PTY.Command}, cfg.PTY.Args...)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	sock := m.socketPath(id)
@@ -388,6 +391,10 @@ type Summary struct {
 	Ended  time.Time
 	Status string
 
+	Cmd    []string  // the command, or nil for the login shell
+	Closed bool      // out of the open set (see SetClosed)
+	Opened time.Time // when it last joined the open set
+
 	LastInput  time.Time // keyboard input sent to the child
 	LastOutput time.Time // output from the child, changing the screen
 	LastAttach time.Time // a client attached to look at the session
@@ -421,7 +428,9 @@ func (m *Manager) List() []Summary {
 			LastInput:  s.LastInput(),
 			LastOutput: s.LastOutput(),
 			LastAttach: s.LastAttach(),
+			Cmd:        s.Cmd(),
 		})
+		out[len(out)-1].Closed, out[len(out)-1].Opened = s.Closed()
 	}
 	for _, f := range m.frozen {
 		out = append(out, Summary{
@@ -433,6 +442,9 @@ func (m *Manager) List() []Summary {
 			LastInput:  f.LastInput,
 			LastOutput: f.LastOutput,
 			LastAttach: f.LastAttach,
+			Cmd:        f.Cmd,
+			Closed:     f.Closed,
+			Opened:     f.Opened,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
