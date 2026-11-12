@@ -109,6 +109,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		"Live": rows, "Ended": ended, "MoreEnded": more,
 		"Owner": owner, "ShareURL": s.shareURL(),
 		"ShareNode": owner && s.ShareNode != nil,
+		"ViewAs":    s.viewAsPage(r.Context()),
 	})
 }
 
@@ -138,6 +139,7 @@ func (s *Server) viewer(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Role":     auth.PeerFrom(r.Context()).Access.String(),
 		"ShareURL": s.shareURL(),
+		"ViewAs":   s.viewAsPage(r.Context()),
 	}
 	if sess, err := s.Manager.Resolve(id); err == nil {
 		data["ID"], data["Name"], data["Shared"] = string(sess.ID()), sess.Name(), sess.Shared()

@@ -68,3 +68,18 @@ async function newSession(name, open = (id) => { location.href = `/s/${encodeURI
   const info = await resp.json();
   open(info.id, info.name || "");
 }
+
+// On the sharing node, the owner's view-as switch: see the pages as other
+// people see them there, or as the owner again. It's for every window on
+// the node, so the page reloads to show the change.
+for (const b of document.querySelectorAll("button[data-viewas]")) {
+  b.addEventListener("click", async () => {
+    const resp = await fetch("/v1/view-as", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({other: b.dataset.viewas === "other"}),
+    });
+    if (resp.ok) location.reload();
+    else alert(`Can't switch: ${resp.statusText}`);
+  });
+}

@@ -206,3 +206,10 @@ body.viewer header #menupop button:hover { background: #3a3a3a; }
 .sharenode input, .sharenode button { font: inherit; font-size: 1rem; padding: .3rem .6rem; }
 .sharenode a { word-break: break-all; }
 button.danger { color: #c33; }
+
+/* The owner's view-as switch, on the sharing node; seeing as others, the
+   page says so, in amber. */
+p.viewas { margin: -.5rem 0 1rem; }
+p.viewas button { font: inherit; padding: .2rem .6rem; }
+p.viewas.other { padding: .4rem .7rem; border-left: 4px solid #e9a400; background: #e9a40022; }
+body.viewer header button.viewas.other { color: #1a1300; background: #e9a400; }

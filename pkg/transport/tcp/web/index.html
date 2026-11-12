@@ -8,7 +8,9 @@
 </head>
 <body>
 <h1>tsterm sessions</h1>
-{{if .Owner}}<form id="new">
+{{with .ViewAs}}{{if .Other}}<p class="viewas other">You're seeing what other people see here. <button type="button" data-viewas="owner">See as the owner</button></p>
+{{else}}<p class="viewas"><button type="button" data-viewas="other" title="See this page, and the sessions', as people other than you see them here">👁 See as others see it</button></p>
+{{end}}{{end}}{{if .Owner}}<form id="new">
 <input name="name" placeholder="name (optional)" spellcheck="false">
 <button type="submit">New session</button>
 <button type="button" id="demo" title="Start tsterm's demo program, which shows off what a terminal can do">Try the demo</button>

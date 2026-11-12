@@ -14,6 +14,7 @@
 <button id="notify" type="button" hidden></button>
 <button id="mode" type="button"></button>
 <button id="closeended" type="button" hidden title="Close this ended session's tab. It's kept, in the session list.">✕ close</button>
+{{with .ViewAs}}{{if .Other}}<button type="button" class="viewas other" data-viewas="owner" title="You're seeing what other people see; click to see it as the owner">👁 as others · back</button>{{else}}<button type="button" class="viewas" data-viewas="other" title="See this session as people other than you see it here">👁 as others</button>{{end}}{{end}}
 <button id="menu" type="button" hidden aria-haspopup="menu" aria-expanded="false" title="More">☰</button>
 <div id="menupop" role="menu" hidden></div>
 </header>

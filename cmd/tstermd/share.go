@@ -298,6 +298,7 @@ func serveSharing(ctx context.Context, srv *tsnet.Server, mgr *session.Manager, 
 		TLS:       tlsConfig(lc, fqdn),
 		HTTPSHost: fqdn,
 		ShareURL:  func() string { return u },
+		ViewAs:    sharing,
 	}
 	ln443, err := srv.Listen("tcp", ":443")
 	if err != nil {

@@ -47,6 +47,31 @@ func TestSharing(t *testing.T) {
 	}
 }
 
+func TestSharingViewAsOther(t *testing.T) {
+	owner := newAuth(t, &fakeLC{self: 1, selfLogin: "bob@example.com"})
+	s := &Sharing{Owner: owner, LC: &fakeLC{who: map[string]*apitype.WhoIsResponse{
+		"100.64.0.1:1": who(77, "bob@example.com"),
+		"100.64.0.3:1": who(79, "alice@example.com"),
+	}}}
+	ch := s.Changes()
+	s.SetViewAsOther(true)
+	select {
+	case <-ch:
+	default:
+		t.Error("SetViewAsOther didn't wake Changes")
+	}
+	if p, _ := s.Authorize(context.Background(), "100.64.0.1:1"); p.Access != Viewer || !p.AsOther {
+		t.Errorf("owner viewing as other = %+v", p)
+	}
+	if p, _ := s.Authorize(context.Background(), "100.64.0.3:1"); p.Access != Viewer || p.AsOther {
+		t.Errorf("other person = %+v", p)
+	}
+	s.SetViewAsOther(false)
+	if p, _ := s.Authorize(context.Background(), "100.64.0.1:1"); p.Access != Owner || p.AsOther {
+		t.Errorf("owner again = %+v", p)
+	}
+}
+
 func TestSharingOwnerWithoutLogin(t *testing.T) {
 	// If tailscaled's owner's login is unknown, nobody is the owner.
 	s := &Sharing{Owner: newAuth(t, &fakeLC{self: 1}), LC: &fakeLC{

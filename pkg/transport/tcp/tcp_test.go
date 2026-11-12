@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -455,3 +456,91 @@ func (f fixedAuth) Authorize(context.Context, string) (auth.Peer, error) {
 	return auth.Peer{Access: auth.Access(f)}, nil
 }
 func (fixedAuth) Changes() <-chan struct{} { return nil }
+
+// viewAsAuth is the owner, unless they're seeing what others see, or
+// anyone else (who is a viewer) if as is "other".
+type viewAsAuth struct {
+	other atomic.Bool
+	as    string
+}
+
+func (a *viewAsAuth) Authorize(context.Context, string) (auth.Peer, error) {
+	if a.as == "other" {
+		return auth.Peer{Access: auth.Viewer}, nil
+	}
+	if a.other.Load() {
+		return auth.Peer{Access: auth.Viewer, AsOther: true}, nil
+	}
+	return auth.Peer{Access: auth.Owner}, nil
+}
+func (*viewAsAuth) Changes() <-chan struct{} { return nil }
+func (a *viewAsAuth) ViewAsOther() bool      { return a.other.Load() }
+func (a *viewAsAuth) SetViewAsOther(v bool)  { a.other.Store(v) }
+
+func TestViewAsOther(t *testing.T) {
+	mgr := sessiontest.NewManager(t)
+	cfg := sleepCfg()
+	for _, n := range []string{"secret", "public"} {
+		if _, err := mgr.Create(session.Config{Name: n, PTY: pty.Config{Command: cfg.Cmd[0], Args: cfg.Cmd[1:]}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mgr.SetShared("public", true)
+	a := &viewAsAuth{}
+	srv := &Server{Manager: mgr, Auth: a, ViewAs: a}
+	hts := httptest.NewServer(srv.Handler())
+	t.Cleanup(hts.Close)
+	page := func() string {
+		t.Helper()
+		resp, err := http.Get(hts.URL + "/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	viewAs := func(other bool) int {
+		t.Helper()
+		body := `{"other":false}`
+		if other {
+			body = `{"other":true}`
+		}
+		resp, err := http.Post(hts.URL+"/v1/view-as", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if p := page(); !strings.Contains(p, `data-viewas="other"`) || !strings.Contains(p, ">secret<") {
+		t.Errorf("owner's page lacks the switch or a session:\n%s", p)
+	}
+	if code := viewAs(true); code != http.StatusNoContent {
+		t.Fatalf("view as other: %d", code)
+	}
+	if p := page(); !strings.Contains(p, `data-viewas="owner"`) || strings.Contains(p, ">secret<") || !strings.Contains(p, ">public<") || strings.Contains(p, `id="new"`) {
+		t.Errorf("seeing as others, the page shows the wrong things:\n%s", p)
+	}
+	r, _ := http.NewRequest("PATCH", hts.URL+"/v1/sessions/secret", strings.NewReader(`{"shared":true}`))
+	r.Header.Set("Content-Type", "application/json")
+	if resp, err := http.DefaultClient.Do(r); err != nil || resp.StatusCode != http.StatusForbidden {
+		t.Errorf("PATCH seeing as others: %v %v, want 403", resp.StatusCode, err)
+	}
+	if code := viewAs(false); code != http.StatusNoContent || a.ViewAsOther() {
+		t.Fatalf("view as owner: %d", code)
+	}
+	if p := page(); !strings.Contains(p, ">secret<") {
+		t.Error("owner again doesn't see everything")
+	}
+
+	// Other people can't flip it, and don't see it.
+	a.as = "other"
+	if code := viewAs(true); code != http.StatusForbidden || a.ViewAsOther() {
+		t.Errorf("another person's view-as: %d", code)
+	}
+	if p := page(); strings.Contains(p, "data-viewas") {
+		t.Error("another person sees the view-as switch")
+	}
+}

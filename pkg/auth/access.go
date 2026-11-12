@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tailscale.com/client/local"
@@ -43,6 +44,11 @@ type Peer struct {
 	Access Access
 	Login  string // their Tailscale login name, if known
 	Name   string // their display name, if known
+
+	// AsOther is set if the peer is the owner, but seeing what other
+	// people see, as a Viewer (see Sharing.SetViewAsOther). They may
+	// still switch back.
+	AsOther bool
 }
 
 // An Authorizer decides what the peer at a remote address may do.
@@ -110,9 +116,29 @@ type Sharing struct {
 	Owner *SelfUser
 	LC    WhoIsClient
 
+	viewAsOther atomic.Bool
+
 	mu      sync.Mutex
 	changed chan struct{}
 }
+
+// SetViewAsOther sets whether the owner, on the sharing node, sees what
+// other people see: they're then a Viewer, with Peer.AsOther set, until
+// it's unset. It wakes Changes, so that their connections authorize again.
+func (s *Sharing) SetViewAsOther(v bool) {
+	if s.viewAsOther.Swap(v) == v {
+		return
+	}
+	s.mu.Lock()
+	ch := s.changed
+	s.mu.Unlock()
+	if ch != nil {
+		s.signal(ch)
+	}
+}
+
+// ViewAsOther reports whether the owner sees what others see.
+func (s *Sharing) ViewAsOther() bool { return s.viewAsOther.Load() }
 
 // Authorize implements Authorizer.
 func (s *Sharing) Authorize(ctx context.Context, remoteAddr string) (Peer, error) {
@@ -133,6 +159,9 @@ func (s *Sharing) Authorize(ctx context.Context, remoteAddr string) (Peer, error
 	p := Peer{Access: Viewer, Login: login, Name: w.UserProfile.DisplayName}
 	if self := s.Owner.SelfLogin(); self != "" && strings.EqualFold(login, self) {
 		p.Access = Owner
+		if s.viewAsOther.Load() {
+			p.Access, p.AsOther = Viewer, true
+		}
 	}
 	return p, nil
 }

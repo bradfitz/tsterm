@@ -47,6 +47,10 @@ type Server struct {
 	// sharing node, at /v1/share.
 	ShareNode ShareNodeControl
 
+	// ViewAs, if non-nil, as on the sharing node, lets the owner see
+	// what other people see there, and switch back, at /v1/view-as.
+	ViewAs ViewAsControl
+
 	// TLS, if non-nil, configures HTTPS, served on the same port as
 	// cleartext HTTP (see Serve).
 	TLS *tls.Config
@@ -78,6 +82,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /v1/share", ownerOnly(s.shareStart))
 		mux.HandleFunc("DELETE /v1/share", ownerOnly(s.shareDestroy))
 	}
+	if s.ViewAs != nil {
+		mux.HandleFunc("POST /v1/view-as", s.setViewAs)
+	}
 	if s.WSHandler != nil {
 		mux.Handle("GET /v1/sessions/{id}/ws", s.WSHandler) // which checks what peers may do
 	}
@@ -95,6 +102,18 @@ type ShareNodeControl interface {
 	// sharing every session, so that a later node shares none of them
 	// unasked.
 	Destroy(context.Context) error
+}
+
+// ViewAsControl switches whether the owner sees what others see (see
+// auth.Sharing.SetViewAsOther).
+type ViewAsControl interface {
+	ViewAsOther() bool
+	SetViewAsOther(bool)
+}
+
+// ViewAsReq is the body of POST /v1/view-as.
+type ViewAsReq struct {
+	Other bool `json:"other"` // see what others see; or, false, as the owner
 }
 
 // ownerOnly wraps h to refuse any peer but the owner.
@@ -276,6 +295,38 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResponse(w, r, http.StatusOK, s.infoFor(sess))
+}
+
+// viewAsPage returns what the pages' view-as switch needs, for a request
+// with ctx: nil for anyone but the owner (seeing as others or not), and
+// where there's no switch.
+func (s *Server) viewAsPage(ctx context.Context) map[string]any {
+	p := auth.PeerFrom(ctx)
+	if s.ViewAs == nil || (p.Access != auth.Owner && !p.AsOther) {
+		return nil
+	}
+	return map[string]any{"Other": p.AsOther}
+}
+
+// setViewAs is for the owner, even while they're seeing what others see,
+// whom it lets switch back.
+func (s *Server) setViewAs(w http.ResponseWriter, r *http.Request) {
+	if p := auth.PeerFrom(r.Context()); p.Access != auth.Owner && !p.AsOther {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only the owner may do that")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "body", err.Error())
+		return
+	}
+	var req ViewAsReq
+	if err := decodeRequest(r, body, &req); err != nil {
+		writeError(w, r, http.StatusBadRequest, "decode", err.Error())
+		return
+	}
+	s.ViewAs.SetViewAsOther(req.Other)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) shareStatus(w http.ResponseWriter, r *http.Request) {

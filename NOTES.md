@@ -67,7 +67,14 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   node's name and tags (never the auth key, used once to log in) are kept
   in `config.json` in its state dir (the sessions dir plus `-share-node`;
   tsnet's under `tsnet/`), so it starts again with tstermd. Or
-  `-share-hostname` (and `-share-tags`) starts one at startup. Next: per-person
+  `-share-hostname` (and `-share-tags`) starts one at startup. On the
+  sharing node, the owner has a "👁 See as others see it" switch (list
+  and viewer pages; `POST /v1/view-as`, `auth.Sharing.SetViewAsOther`):
+  one process-wide flag, until switched back or the node restarts, under
+  which the owner there is a Viewer (with `Peer.AsOther`, which may only
+  switch back), with an amber banner saying so. Switching wakes the
+  authorizer's Changes, so the owner's open connections there drop to
+  read-only. The main server (:2200) is unaffected. Next: per-person
   typing access to sessions (an ACL per session instead of one bit, and
   `Access` per session rather than per peer).
 - **CLI client** (`cmd/tsterm`): attach, list, create, kill; status line when
