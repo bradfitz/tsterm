@@ -17,9 +17,14 @@ application-layer crypto. The original design discussion is in ~/tsterm.pdf.
 Working, and deployed on braid as a systemd user unit (`tstermd`):
 
 - **Processes.** `tstermd` serves the tailnet. Each session's PTY and child
-  live in a `tsterm-shim` process (one per session; under systemd, its own
-  transient unit `tsterm-pty-<ID>`), so tstermd can restart or upgrade
-  without killing sessions. The tstermd/shim protocol is `pkg/shimproto`.
+  live in a shim process, tstermd's own binary run again (selected by
+  `TSTERM_SHIM_SPAWN`; see `shim.MainIfRequested`; named `tstermd-shim` in
+  ps), one per session, under systemd in its own transient unit
+  `tsterm-pty-<ID>`, so tstermd can restart or upgrade without killing
+  sessions. tstermd runs shims from `/proc/self/exe`, so they're the same
+  build as the tstermd that starts them, even after its file is replaced.
+  The tstermd/shim protocol is `pkg/shimproto`; a new tstermd must still
+  speak it to shims from older builds, which run until their sessions end.
 - **Restarts.** tstermd checkpoints each session's terminal state to its
   shim, restores sessions on startup, and pushes the screen to the sessions'
   last-known UDP clients, so idle clients catch up unprompted.
@@ -73,9 +78,18 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   "Naming"). Every session's TERM is xterm-256color (tstermd's emulator),
   and LANG defaults to C.UTF-8.
 
-Run it: `go install ./cmd/...`, then
-`systemd-run --user --unit=tstermd --collect ~/go/bin/tstermd`. User
-services need lingering (`loginctl enable-linger`).
+Run it: `go install github.com/bradfitz/tsterm/cmd/tstermd@latest` (or
+`./cmd/...` from a checkout), then `tstermd install`, which checks the
+prerequisites (systemd's user manager, lingering, which it enables if it
+can, Tailscale up, the operator setting and HTTPS certificates, warning with
+the fix), writes `~/.config/systemd/user/tstermd.service` (`ExecStart=...
+tstermd run [the flags given]`), replaces any transient unit of that name,
+enables and restarts it, and prints the URL. Upgrading is the same: go
+install, then `tstermd install` again (or `systemctl --user restart
+tstermd`); sessions survive. `tstermd uninstall` stops and removes it,
+leaving sessions running and their data. Plain `tstermd` prints this, and
+on macOS says launchd support is a TODO. `tstermd run` runs in the
+foreground. No README yet, by choice: it's public, but not announced.
 
 ## Terminal emulator: libghostty-vt
 
@@ -264,6 +278,8 @@ the web UI, where browsers restrict or lack the equivalent.
   (IOKit on macOS, logind's PrepareForSleep on Linux). TODOs in
   `cmd/tsterm/attach.go`.
 - tstermd doesn't reopen its sockets if its own Tailscale IPs change.
+- `tstermd install` is for a user's systemd instance only: not root, or a
+  system-wide service, or macOS's launchd.
 - Shims under launchd (macOS) aren't handled; peer-credential checks on
   macOS/BSDs (`getpeereid`) TODO in `pkg/shim/peer_other.go`.
 - Input could be applied twice if the server applies a keystroke, its ack is

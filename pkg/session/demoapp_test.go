@@ -11,11 +11,14 @@ import (
 
 	"github.com/bradfitz/tsterm/internal/demoapp"
 	"github.com/bradfitz/tsterm/pkg/pty"
+	"github.com/bradfitz/tsterm/pkg/shim"
 )
 
 func TestMain(m *testing.M) {
-	// In a session's PTY, this binary is the fake full-screen program.
+	// In a session's PTY, this binary is the fake full-screen program,
+	// and launched by shim.Exec, it's a shim.
 	demoapp.MainIfRequested()
+	shim.MainIfRequested()
 	os.Exit(m.Run())
 }
 

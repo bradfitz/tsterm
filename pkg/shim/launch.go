@@ -20,10 +20,10 @@ type Launcher interface {
 	Launch(ctx context.Context, cfg shimproto.SpawnConfig) error
 }
 
-// Exec launches shims by running the tsterm-shim binary, so that they are
-// separate processes that outlive tstermd.
+// Exec launches shims by running a program that calls MainIfRequested,
+// tstermd, so that they are separate processes that outlive tstermd.
 type Exec struct {
-	// Path is the tsterm-shim binary.
+	// Path is the program, as from SelfPath.
 	Path string
 
 	// Systemd, if true, starts each shim as its own transient systemd
@@ -61,7 +61,7 @@ func (e *Exec) Launch(ctx context.Context, cfg shimproto.SpawnConfig) error {
 		if os.Getuid() != 0 {
 			args = append(args, "--user")
 		}
-		args = append(args, "--", e.Path, "-spawn", spawn)
+		args = append(args, "--setenv="+SpawnEnvVar+"="+spawn, "--", e.Path, "shim", cfg.ID)
 		cmd = exec.CommandContext(ctx, "systemd-run", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			os.Remove(spawn)
@@ -69,7 +69,8 @@ func (e *Exec) Launch(ctx context.Context, cfg shimproto.SpawnConfig) error {
 		}
 		return nil
 	}
-	cmd = exec.Command(e.Path, "-spawn", spawn)
+	cmd = exec.Command(e.Path, "shim", cfg.ID) // the arguments are for ps
+	cmd.Env = append(os.Environ(), SpawnEnvVar+"="+spawn)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		os.Remove(spawn)
@@ -80,8 +81,7 @@ func (e *Exec) Launch(ctx context.Context, cfg shimproto.SpawnConfig) error {
 }
 
 // InProcess runs shims as goroutines in the calling process. Sessions then
-// do not survive the process, so it is for tests and for running without a
-// tsterm-shim binary.
+// do not survive the process, so it is for tests.
 type InProcess struct {
 	// Options configures each shim.
 	Options Options

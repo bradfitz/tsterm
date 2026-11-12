@@ -1,17 +1,24 @@
 // tstermd is the tsterm daemon: it hosts PTY sessions and exposes them on
 // the local tailnet via three transports — an HTTP/CBOR control plane, a
-// UDP hot path for input and screen deltas, and a read-only WebSocket
-// viewer. Tailscale identity is required for every request and matched
-// against the local node's tailnet user.
+// UDP hot path for input and screen deltas, and a WebSocket viewer.
+// Tailscale identity is required for every request and matched against the
+// local node's tailnet user.
 //
-// Each session's PTY and child process live in their own tsterm-shim
-// process, so restarting or upgrading tstermd does not end any session: on
-// startup, tstermd finds the running shims in its -run-dir and restores
-// their sessions. Under systemd, tstermd starts each shim as its own
-// transient unit, because stopping tstermd's unit kills every process in
-// its control group. As a user service, that needs the user's systemd
-// instance, so enable lingering (loginctl enable-linger) for sessions to
-// survive logout.
+// Usage:
+//
+//	tstermd install [flags]   run as a systemd user service; again to upgrade
+//	tstermd uninstall         stop and remove the service
+//	tstermd run [flags]       run in the foreground
+//
+// Each session's PTY and child process live in their own shim process,
+// tstermd's binary run again (see shim.MainIfRequested), so restarting or
+// upgrading tstermd does not end any session: on startup, tstermd finds the
+// running shims in its -run-dir and restores their sessions. Under systemd,
+// tstermd starts each shim as its own transient unit, because stopping
+// tstermd's unit kills every process in its control group. As a user
+// service, that needs the user's systemd instance, so tstermd install
+// enables lingering (loginctl enable-linger), for sessions to survive
+// logout.
 package main
 
 import (
@@ -24,7 +31,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -48,22 +54,78 @@ import (
 
 func main() {
 	// tstermd also serves as the demo program, which sessions named
-	// session.DemoName run.
+	// session.DemoName run, and as their shims.
 	demoapp.MainIfRequested()
+	shim.MainIfRequested()
 
-	useTSNet := flag.Bool("tsnet", false, "embed a tsnet.Server instead of using the host tailscaled")
-	stateDir := flag.String("state-dir", defaultStateDir(), "tsnet state directory (only used with -tsnet)")
-	hostname := flag.String("hostname", "", "tsnet hostname (only used with -tsnet; defaults to os.Hostname)")
-	port := flag.Int("port", 2200, "control-plane HTTP port")
-	udpPort := flag.Int("udp-port", 2201, "hot-path UDP port")
-	bindAll := flag.Bool("bind-all", false, "bind on all interfaces (default: tailnet addresses only)")
-	runDir := flag.String("run-dir", defaultRunDir(), "directory for the shims' unix sockets")
-	sessionsDir := flag.String("sessions-dir", defaultSessionsDir(), "directory for sessions' lasting state, such as their history")
-	shimPath := flag.String("shim", defaultShimPath(), "path to the tsterm-shim binary")
-	shimLaunch := flag.String("shim-launch", "auto", `how to start shims: "systemd" (each in its own transient unit), "direct", "inprocess" (sessions die with tstermd), or "auto" (systemd when running under systemd, else direct)`)
-	flag.Parse()
+	args := os.Args[1:]
+	cmd := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd, args = args[0], args[1:]
+	}
+	switch cmd {
+	case "run":
+		run(args)
+	case "install":
+		install(args)
+	case "uninstall":
+		uninstall(args)
+	case "", "help":
+		usage(os.Stdout)
+		if len(args) > 0 && cmd == "" {
+			fmt.Printf("\n(Flags go after a command, as in: tstermd run %s)\n", strings.Join(args, " "))
+			os.Exit(2)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "tstermd: unknown command %q\n\n", cmd)
+		usage(os.Stderr)
+		os.Exit(2)
+	}
+}
 
-	launcher, err := newLauncher(*shimLaunch, *shimPath)
+// runFlags are the flags of tstermd run, which tstermd install passes on.
+type runFlags struct {
+	fs          *flag.FlagSet
+	useTSNet    *bool
+	stateDir    *string
+	hostname    *string
+	port        *int
+	udpPort     *int
+	bindAll     *bool
+	runDir      *string
+	sessionsDir *string
+	shimLaunch  *string
+}
+
+func newRunFlags(name string) *runFlags {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	return &runFlags{
+		fs:          fs,
+		useTSNet:    fs.Bool("tsnet", false, "embed a tsnet.Server instead of using the host tailscaled"),
+		stateDir:    fs.String("state-dir", defaultStateDir(), "tsnet state directory (only used with -tsnet)"),
+		hostname:    fs.String("hostname", "", "tsnet hostname (only used with -tsnet; defaults to os.Hostname)"),
+		port:        fs.Int("port", 2200, "control-plane HTTP port"),
+		udpPort:     fs.Int("udp-port", 2201, "hot-path UDP port"),
+		bindAll:     fs.Bool("bind-all", false, "bind on all interfaces (default: tailnet addresses only)"),
+		runDir:      fs.String("run-dir", defaultRunDir(), "directory for the shims' unix sockets"),
+		sessionsDir: fs.String("sessions-dir", defaultSessionsDir(), "directory for sessions' lasting state, such as their history"),
+		shimLaunch:  fs.String("shim-launch", "auto", `how to start shims: "systemd" (each in its own transient unit), "direct", "inprocess" (sessions die with tstermd), or "auto" (systemd when running under systemd, else direct)`),
+	}
+}
+
+// run runs tstermd in the foreground.
+func run(args []string) {
+	f := newRunFlags("tstermd run")
+	f.fs.Parse(args)
+	if f.fs.NArg() > 0 {
+		log.Fatalf("tstermd run: unexpected arguments %q", f.fs.Args())
+	}
+	useTSNet, stateDir, hostname := f.useTSNet, f.stateDir, f.hostname
+	port, udpPort, bindAll := f.port, f.udpPort, f.bindAll
+	runDir, sessionsDir, shimLaunch := f.runDir, f.sessionsDir, f.shimLaunch
+	log.Printf("tstermd: version %s", version())
+
+	launcher, err := newLauncher(*shimLaunch)
 	if err != nil {
 		log.Fatalf("tstermd: %v", err)
 	}
@@ -339,22 +401,7 @@ func defaultRunDir() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("tsterm-%d", os.Getuid()))
 }
 
-// defaultShimPath returns the tsterm-shim next to this binary, if any,
-// else the one in $PATH.
-func defaultShimPath() string {
-	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), "tsterm-shim")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if p, err := exec.LookPath("tsterm-shim"); err == nil {
-		return p
-	}
-	return "tsterm-shim"
-}
-
-func newLauncher(mode, shimPath string) (shim.Launcher, error) {
+func newLauncher(mode string) (shim.Launcher, error) {
 	if mode == "auto" {
 		// systemd sets INVOCATION_ID for the processes of every unit.
 		mode = "direct"
@@ -364,11 +411,9 @@ func newLauncher(mode, shimPath string) (shim.Launcher, error) {
 	}
 	switch mode {
 	case "systemd", "direct":
-		p, err := exec.LookPath(shimPath)
+		// Shims are this binary run again.
+		p, err := shim.SelfPath()
 		if err != nil {
-			return nil, fmt.Errorf("finding tsterm-shim (see -shim): %w", err)
-		}
-		if p, err = filepath.Abs(p); err != nil {
 			return nil, err
 		}
 		log.Printf("tstermd: launching shims (%s) with %s", mode, p)
