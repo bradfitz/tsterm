@@ -836,7 +836,11 @@ areaEl.addEventListener("scroll", () => {
 
 // The view-only switch.
 const modeEl = document.getElementById("mode");
+const deleteEl = document.getElementById("delete");
+let deleteTimer; // until a click to delete needs confirming again
 function showMode() {
+  deleteEl.hidden = !ended;
+  unconfirmDelete();
   modeEl.textContent = writable ? "⌨ typing" : "👁 view-only";
   modeEl.title = writable ? "Click to stop typing into the session" : "Click to type into the session";
   modeEl.hidden = !!ended;
@@ -1037,6 +1041,8 @@ async function refreshTabs() {
     el.textContent = tabLabel(s);
     el.title = s.id + (s.name ? ` (${s.name})` : "");
     el.href = `/s/${encodeURIComponent(s.id)}`;
+    el.dataset.id = s.id;
+    el.dataset.name = s.name || "";
     el.addEventListener("click", (ev) => {
       if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return; // a new tab or window
       ev.preventDefault();
@@ -1090,13 +1096,16 @@ tabsEl.addEventListener("scroll", showTabsOverflow);
 new ResizeObserver(showTabsOverflow).observe(tabsEl);
 
 // switchTo shows another session in this page, without reloading it, and
-// adds it to the history (push) unless it came from there. The new
-// connection's first message is the session's whole screen.
+// adds it to the history (push true) unless it came from there, or
+// replaces the current entry (push "replace"). The new connection's first
+// message is the session's whole screen.
 function switchTo(id, name, push) {
   if (id === sessionID) return;
   sessionID = screenEl.dataset.id = id;
   sessionName = name;
-  if (push) history.pushState({id, name}, "", `/s/${encodeURIComponent(id)}${location.search}`);
+  const url = `/s/${encodeURIComponent(id)}${location.search}`;
+  if (push === "replace") history.replaceState({id, name}, "", url);
+  else if (push) history.pushState({id, name}, "", url);
   document.title = `${name || id} · tsterm`;
   mouseButton = -1;
   rows = []; cursor = null; modes = {}; sizing = {};
@@ -1110,6 +1119,34 @@ history.replaceState({id: sessionID, name: sessionName}, "");
 window.addEventListener("popstate", (ev) => {
   if (ev.state && ev.state.id) switchTo(ev.state.id, ev.state.name, false);
   else location.reload();
+});
+
+// An ended session can be deleted, with a second click to confirm, and
+// the page then shows the next tab's session, to the right or else the
+// left, or else the list of sessions.
+function unconfirmDelete() {
+  clearTimeout(deleteTimer);
+  deleteEl.classList.remove("confirm");
+  deleteEl.textContent = "🗑 delete";
+}
+deleteEl.addEventListener("click", async () => {
+  if (!deleteEl.classList.contains("confirm")) {
+    deleteEl.classList.add("confirm");
+    deleteEl.textContent = "🗑 click again to delete";
+    deleteTimer = setTimeout(unconfirmDelete, 3000);
+    return;
+  }
+  unconfirmDelete();
+  const resp = await fetch(`/v1/sessions/${encodeURIComponent(sessionID)}`, {method: "DELETE"});
+  if (!resp.ok) {
+    alert(`Can't delete: ${resp.statusText}`);
+    return;
+  }
+  const cur = tabsEl.querySelector(".current");
+  let next = cur && cur.nextElementSibling;
+  if (!next || next.tagName !== "A") next = cur && cur.previousElementSibling;
+  if (next && next.tagName === "A") switchTo(next.dataset.id, next.dataset.name, "replace");
+  else location.replace("/");
 });
 
 // The wheel scrolls the tabs sideways.

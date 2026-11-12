@@ -30,6 +30,7 @@ nav#tabs button { font: inherit; flex-shrink: 0; padding: 0 .5rem; color: #aaa; 
 nav#tabs button:hover { color: #fff; border-color: #888; }
 body.viewer header button { font: inherit; color: #ccc; background: #333; border: 0; border-radius: .3rem; padding: .1rem .5rem; cursor: pointer; }
 body.viewer header button:hover { background: #444; color: #fff; }
+body.viewer header button#delete.confirm { background: #a33; color: #fff; }
 form#new { margin: 0 0 1rem; display: flex; gap: .5rem; }
 form#new input, form#new button { font: inherit; padding: .3rem .6rem; }
 

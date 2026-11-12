@@ -152,7 +152,9 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   program exited while no tstermd ran is attached anyway, so its last
   output is read before it freezes. Frozen sessions don't hold their
   names. DELETE ends a live session (it freezes) or deletes a frozen one;
-  the index lists them under "Ended" with delete buttons. A viewer of a
+  the index lists them under "Ended" with delete buttons, and a frozen
+  session's own page has one in its header (click twice), after which it
+  shows the next tab's session, right or else left. A viewer of a
   session that ends keeps its connection, for history. The manager keeps
   the newest 100 frozen sessions, within 2 GB.
 - **Performance.** Writes: 132 MB/s (charm: 15). Snapshot of 200×60:
