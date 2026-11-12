@@ -227,7 +227,8 @@ encoding, palette), tested against real handlers. Not the UDP protocol yet.
   (new, demo, rename, reopen, delete forever), the terminal view (the rows in
   view of history plus screen in a `TextGrid`, virtual scrolling with a
   thumb, older history loading near the top, wheel and Shift-PageUp/Down,
-  pinned to the bottom, skip-ahead on floods), colors and bold/italic/
+  pinned to the bottom, skip-ahead on floods; sideways, with a sideways
+  wheel or Shift-wheel, across a session wider than the window), colors and bold/italic/
   underline/faint/reverse/conceal, wide characters, cursor shapes with blink
   and hollow when unfocused, the checkerboard, selection and copy
   (Ctrl-Shift-C on Linux/Windows, Cmd-C on macOS) and paste (Ctrl-Shift-V,
@@ -258,8 +259,7 @@ encoding, palette), tested against real handlers. Not the UDP protocol yet.
 - **Gaps vs. the web UI:** no audible bell (Fyne has no audio); no
   overline or curly/dotted/dashed/double underlines (TextGrid draws one
   kind); no emoji (Fyne's font), and a colored background can cover a wide
-  character's right half; no horizontal scrolling when the session is
-  wider than the window (it's clipped); Other's count doesn't pulse; no
+  character's right half; Other's count doesn't pulse; no
   mobile extra-keys bar; IME composition untested; the auto-fit preference
   isn't shared with browsers.
 

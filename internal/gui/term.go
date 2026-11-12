@@ -40,9 +40,12 @@ type Term struct {
 	strikes *fyne.Container   // lines through struck-out text, which TextGrid can't draw
 	flash   *canvas.Rectangle // the bell
 	thumb   *canvas.Rectangle // where the view is in the history
+	hthumb  *canvas.Rectangle // where the view is across a wide session
 
 	scrollBack int     // rows above the bottom of the content
+	hOff       int     // columns scrolled right, in a session wider than the view
 	wheel      float32 // wheel scrolling not yet a whole row
+	hwheel     float32 // or column
 	focused    bool
 	blinkOff   bool
 
@@ -80,6 +83,7 @@ func newTerm(a *App) *Term {
 		cursor:      canvas.NewRectangle(color.Transparent),
 		flash:       canvas.NewRectangle(color.NRGBA{0xff, 0xff, 0xff, 0x40}),
 		thumb:       canvas.NewRectangle(color.NRGBA{0x80, 0x80, 0x80, 0x80}),
+		hthumb:      canvas.NewRectangle(color.NRGBA{0x80, 0x80, 0x80, 0x80}),
 		strikes:     container.NewWithoutLayout(),
 		mouseButton: -1,
 		styles:      map[cellStyle]*widget.CustomTextGridStyle{},
@@ -89,6 +93,7 @@ func newTerm(a *App) *Term {
 	t.cursor.StrokeColor = wsclient.DefaultFg
 	t.flash.Hide()
 	t.thumb.Hide()
+	t.hthumb.Hide()
 	t.ExtendBaseWidget(t)
 	return t
 }
@@ -256,8 +261,10 @@ func (t *Term) refreshView() {
 	rows, top, nhist := t.view()
 	st := &t.a.st
 	_, viewCols := t.fitSize()
-	cols := min(st.Screen.Cols, viewCols)
+	t.hOff = min(max(0, t.hOff), max(0, st.Screen.Cols-viewCols))
+	cols := min(st.Screen.Cols-t.hOff, viewCols)
 	cur := st.Screen.Cursor
+	cur.Col -= t.hOff
 	cursorRow := -1
 	if cur.Visible && st.Ended == "" && !t.blinkOff {
 		cursorRow = nhist + cur.Row - top
@@ -286,14 +293,14 @@ func (t *Term) refreshView() {
 		cells := make([]widget.TextGridCell, cols)
 		for x := range cols {
 			var c vt.Cell
-			if x < len(row) {
-				c = row[x]
+			if x+t.hOff < len(row) {
+				c = row[x+t.hOff]
 			} else {
 				c.Width = 1
 			}
 			invert := y == cursorRow && x == cur.Col && block
 			if t.sel != nil {
-				p := [2]int{top + y, x}
+				p := [2]int{top + y, x + t.hOff}
 				invert = invert != (!less(p, selFrom) && less(p, selTo))
 			}
 			r := cellRune(c.Grapheme)
@@ -305,13 +312,13 @@ func (t *Term) refreshView() {
 			if on && struck < 0 {
 				struck = x
 			} else if !on && struck >= 0 {
-				fg, _, _ := wsclient.Colors(row[struck].Style)
+				fg, _, _ := wsclient.Colors(row[struck+t.hOff].Style)
 				strike(y, struck, x, fg)
 				struck = -1
 			}
 		}
 		if struck >= 0 {
-			fg, _, _ := wsclient.Colors(row[struck].Style)
+			fg, _, _ := wsclient.Colors(row[struck+t.hOff].Style)
 			strike(y, struck, cols, fg)
 		}
 		grid[y] = widget.TextGridRow{Cells: cells}
@@ -326,7 +333,7 @@ func (t *Term) refreshView() {
 	t.under.Resize(size)
 
 	// Cursors a cell's colors can't show.
-	if cursorRow >= 0 && cursorRow < len(rows) && cur.Col < cols && !block {
+	if cursorRow >= 0 && cursorRow < len(rows) && cur.Col >= 0 && cur.Col < cols && !block {
 		pos := fyne.NewPos(float32(cur.Col)*cs.Width, float32(cursorRow)*cs.Height)
 		t.cursor.FillColor, t.cursor.StrokeWidth = color.Transparent, 0
 		switch {
@@ -362,6 +369,17 @@ func (t *Term) refreshView() {
 		t.thumb.Hide()
 	}
 	t.thumb.Refresh()
+	if wide := st.Screen.Cols; wide > viewCols {
+		w := t.Size().Width
+		thumbW := max(12, w*float32(viewCols)/float32(wide))
+		x := (w - thumbW) * float32(t.hOff) / float32(max(1, wide-viewCols))
+		t.hthumb.Move(fyne.NewPos(x, t.Size().Height-5))
+		t.hthumb.Resize(fyne.NewSize(thumbW, 4))
+		t.hthumb.Show()
+	} else {
+		t.hthumb.Hide()
+	}
+	t.hthumb.Refresh()
 	t.under.Refresh()
 }
 
@@ -413,7 +431,7 @@ func (r *termRenderer) Refresh() { r.t.refreshView() }
 
 func (r *termRenderer) Objects() []fyne.CanvasObject {
 	t := r.t
-	return []fyne.CanvasObject{t.checker, t.under, t.grid, t.strikes, t.cursor, t.flash, t.thumb}
+	return []fyne.CanvasObject{t.checker, t.under, t.grid, t.strikes, t.cursor, t.flash, t.thumb, t.hthumb}
 }
 
 func (r *termRenderer) Destroy() {}
@@ -649,7 +667,7 @@ func (t *Term) selectedText() string {
 func (t *Term) cellAt(p fyne.Position) (row, col int) {
 	cs := t.cellSize()
 	_, top, _ := t.view()
-	return top + max(0, int(p.Y/cs.Height)), max(0, int(p.X/cs.Width))
+	return top + max(0, int(p.Y/cs.Height)), t.hOff + max(0, int(p.X/cs.Width))
 }
 
 // screenCell returns the screen cell at p, if it's on the screen.
@@ -796,7 +814,22 @@ func (t *Term) MouseMoved(ev *desktop.MouseEvent) {
 // Scrolled implements fyne.Scrollable: the wheel scrolls the history, or
 // goes to a program that wants the mouse.
 func (t *Term) Scrolled(ev *fyne.ScrollEvent) {
-	dy := ev.Scrolled.DY
+	dx, dy := ev.Scrolled.DX, ev.Scrolled.DY
+	if _, viewCols := t.fitSize(); t.a.st.Screen.Cols > viewCols && (dx != 0 || t.shift) {
+		// Across a session wider than the view, with a sideways wheel
+		// or swipe, or Shift and the wheel.
+		if dx == 0 {
+			dx = dy
+		}
+		t.hwheel += dx * 3 / 10
+		n := int(t.hwheel)
+		t.hwheel -= float32(n)
+		if n != 0 {
+			t.hOff -= n
+			t.refreshView()
+		}
+		return
+	}
 	if dy == 0 {
 		return
 	}
