@@ -710,10 +710,33 @@ function showNotification(n) {
     showToast(n.t || label, n.b || "");
     return;
   }
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
-  const note = new Notification(n.t || label, {body: n.b || "", tag: `tsterm-${sessionID}`});
+  const title = n.t || label, body = n.b || "";
+  if (!("Notification" in window) || Notification.permission !== "granted") {
+    console.info("tsterm: notification permission is", window.Notification && Notification.permission, "; showing it on return:", title, body);
+    missed.push([title, body]);
+    return;
+  }
+  // The tag keeps one notification per session in the system's list;
+  // renotify alerts again when a new one replaces the old.
+  const note = new Notification(title, {body, tag: `tsterm-${sessionID}`, renotify: true});
   note.onclick = () => { window.focus(); note.close(); };
+  note.onshow = () => console.info("tsterm: showed notification:", title, body);
+  note.onerror = () => {
+    console.warn("tsterm: the system didn't show the notification (are the browser's notifications allowed in the OS settings?); showing it on return:", title, body);
+    missed.push([title, body]);
+  };
 }
+
+// Notifications that couldn't be shown while the page was in the
+// background are shown as toasts when it comes back.
+let missed = [];
+function showMissed() {
+  if (!document.hasFocus() || document.hidden) return;
+  for (const [title, body] of missed) showToast(title, body);
+  missed = [];
+}
+window.addEventListener("focus", showMissed);
+document.addEventListener("visibilitychange", showMissed);
 
 function showToast(title, body) {
   const el = document.createElement("div");

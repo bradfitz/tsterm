@@ -106,7 +106,8 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   the bell. The CLI passes them to the local terminal (control characters
   stripped). The web viewer shows them as toasts while the page is in
   front, and with the browser's Notification API otherwise (once allowed;
-  needs HTTPS). Being state, notifications sent within one screen update
+  needs HTTPS; they renotify, replacing the session's previous one, and any
+  the system couldn't show become toasts when the page is back). Being state, notifications sent within one screen update
   coalesce to the last. The demo's `N` key notifies after 5 seconds, to try
   the unfocused path. The viewer's bell beeps (Web Audio, unlocked by the
   first key press or click) and flashes the screen.
