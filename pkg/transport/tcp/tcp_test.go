@@ -3,8 +3,8 @@ package tcp
 import (
 	"bytes"
 	"context"
-	"errors"
 	"encoding/json/v2"
+	"errors"
 	"io"
 	"net"
 	"net/http"
