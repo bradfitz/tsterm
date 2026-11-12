@@ -40,8 +40,7 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   IPv6). Every request's peer (`auth.Peer`, from an `auth.Authorizer`, put
   in its context by `auth.Middleware`) has an `auth.Access`: `Owner`
   (everything), `Viewer` (read-only, shared sessions only), or none.
-- **Sharing node** (`-share-hostname braid-shell -share-tags
-  tag:bradfitz-experiments`; `cmd/tstermd/share.go`): a second Tailscale
+- **Sharing node** (`cmd/tstermd/share.go`): a second Tailscale
   node, tsnet, inside tstermd, usually tagged so that people the owner's
   machines are closed to by ACLs can reach it. It serves the web UI on 443
   (HTTPS, required) and 80 (redirecting to 443), from the same session
@@ -58,8 +57,17 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   from the list's hover "share…" button (a green "shared" badge after) or
   the viewer's ☰ menu (share, copy link, stop sharing), each asking first;
   they're shown only once the sharing node is up (`tcp.Server.ShareURL`).
-  The node's state is in the sessions dir plus `-share-node`; it logs a
-  login URL the first time, unless `$TS_AUTHKEY` is set. Next: per-person
+  The owner starts it from the session list's "Sharing node" section
+  (optional name, defaulting to HOST-shell, tags, and auth key; `POST
+  /v1/share`), which then shows its state (starting, the login URL if it
+  needs logging in, its URL once running, or why it failed) and a Destroy
+  button (`DELETE /v1/share`): that logs it out, deletes its state, and
+  unshares every session, so a later node exposes nothing unasked. Only
+  the main server has these routes, not the sharing node itself. A started
+  node's name and tags (never the auth key, used once to log in) are kept
+  in `config.json` in its state dir (the sessions dir plus `-share-node`;
+  tsnet's under `tsnet/`), so it starts again with tstermd. Or
+  `-share-hostname` (and `-share-tags`) starts one at startup. Next: per-person
   typing access to sessions (an ACL per session instead of one bit, and
   `Access` per session rather than per peer).
 - **CLI client** (`cmd/tsterm`): attach, list, create, kill; status line when

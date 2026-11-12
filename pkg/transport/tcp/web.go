@@ -108,6 +108,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "index.html", map[string]any{
 		"Live": rows, "Ended": ended, "MoreEnded": more,
 		"Owner": owner, "ShareURL": s.shareURL(),
+		"ShareNode": owner && s.ShareNode != nil,
 	})
 }
 

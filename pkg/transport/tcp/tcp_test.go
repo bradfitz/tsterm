@@ -3,6 +3,7 @@ package tcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"encoding/json/v2"
 	"io"
 	"net"
@@ -375,3 +376,82 @@ func TestViewerAccess(t *testing.T) {
 	default:
 	}
 }
+
+// fakeShareNode is a tcp.ShareNodeControl that pretends to start nodes.
+type fakeShareNode struct {
+	st  proto.ShareNode
+	req proto.StartShareNodeReq
+}
+
+func (f *fakeShareNode) Status(context.Context) proto.ShareNode { return f.st }
+func (f *fakeShareNode) Start(_ context.Context, req proto.StartShareNodeReq) error {
+	if f.st.State != "off" {
+		return errors.New("already started")
+	}
+	f.req = req
+	f.st = proto.ShareNode{State: "login", Hostname: req.Hostname, LoginURL: "https://login.example/"}
+	return nil
+}
+func (f *fakeShareNode) Destroy(context.Context) error {
+	f.st = proto.ShareNode{State: "off"}
+	return nil
+}
+
+func TestShareNodeAPI(t *testing.T) {
+	fake := &fakeShareNode{st: proto.ShareNode{State: "off", Hostname: "braid-shell"}}
+	for _, acc := range []auth.Access{auth.Owner, auth.Viewer} {
+		srv := &Server{Manager: sessiontest.NewManager(t), Auth: fixedAuth(acc), ShareNode: fake}
+		hts := httptest.NewServer(srv.Handler())
+		t.Cleanup(hts.Close)
+		do := func(method, body string) (int, string) {
+			t.Helper()
+			r, _ := http.NewRequest(method, hts.URL+"/v1/share", strings.NewReader(body))
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Accept", "application/json")
+			resp, err := http.DefaultClient.Do(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			return resp.StatusCode, string(b)
+		}
+		if acc == auth.Viewer {
+			for _, m := range []string{"GET", "POST", "DELETE"} {
+				if code, _ := do(m, "{}"); code != http.StatusForbidden {
+					t.Errorf("viewer %s /v1/share: %d, want 403", m, code)
+				}
+			}
+			continue
+		}
+		if code, body := do("GET", ""); code != 200 || !strings.Contains(body, `"state":"off"`) {
+			t.Errorf("GET: %d %s", code, body)
+		}
+		if code, body := do("POST", `{"hostname":"x-shell","tags":["tag:a"],"authKey":"tskey-secret"}`); code != 200 || !strings.Contains(body, `"state":"login"`) || strings.Contains(body, "tskey") {
+			t.Errorf("POST: %d %s", code, body)
+		}
+		if fake.req.Hostname != "x-shell" || fake.req.AuthKey != "tskey-secret" || len(fake.req.Tags) != 1 {
+			t.Errorf("Start got %+v", fake.req)
+		}
+		if code, _ := do("POST", `{}`); code != http.StatusBadRequest {
+			t.Errorf("second POST: %d, want 400", code)
+		}
+		if code, _ := do("DELETE", ""); code != http.StatusNoContent || fake.st.State != "off" {
+			t.Errorf("DELETE: %d, state %q", code, fake.st.State)
+		}
+		r, _ := http.Get(hts.URL + "/")
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if !strings.Contains(string(b), `id="sharenode"`) {
+			t.Error("owner's index page has no sharing node section")
+		}
+	}
+}
+
+// fixedAuth authorizes every peer with the same access.
+type fixedAuth auth.Access
+
+func (f fixedAuth) Authorize(context.Context, string) (auth.Peer, error) {
+	return auth.Peer{Access: auth.Access(f)}, nil
+}
+func (fixedAuth) Changes() <-chan struct{} { return nil }

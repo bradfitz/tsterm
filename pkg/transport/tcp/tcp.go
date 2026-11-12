@@ -43,6 +43,10 @@ type Server struct {
 	// no sharing, and they don't.
 	ShareURL func() string
 
+	// ShareNode, if non-nil, lets the owner start and destroy the
+	// sharing node, at /v1/share.
+	ShareNode ShareNodeControl
+
 	// TLS, if non-nil, configures HTTPS, served on the same port as
 	// cleartext HTTP (see Serve).
 	TLS *tls.Config
@@ -69,10 +73,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}", ownerOnly(s.info))
 	mux.HandleFunc("DELETE /v1/sessions/{id}", ownerOnly(s.kill))
 	mux.HandleFunc("PATCH /v1/sessions/{id}", ownerOnly(s.update))
+	if s.ShareNode != nil {
+		mux.HandleFunc("GET /v1/share", ownerOnly(s.shareStatus))
+		mux.HandleFunc("POST /v1/share", ownerOnly(s.shareStart))
+		mux.HandleFunc("DELETE /v1/share", ownerOnly(s.shareDestroy))
+	}
 	if s.WSHandler != nil {
 		mux.Handle("GET /v1/sessions/{id}/ws", s.WSHandler) // which checks what peers may do
 	}
 	return s.redirectToHTTPS(auth.Middleware(s.Auth, mux))
+}
+
+// ShareNodeControl starts and destroys tstermd's sharing node.
+type ShareNodeControl interface {
+	Status(context.Context) proto.ShareNode
+
+	// Start starts the node, if it's off.
+	Start(context.Context, proto.StartShareNodeReq) error
+
+	// Destroy stops the node, logs it out, and forgets it, and stops
+	// sharing every session, so that a later node shares none of them
+	// unasked.
+	Destroy(context.Context) error
 }
 
 // ownerOnly wraps h to refuse any peer but the owner.
@@ -254,6 +276,38 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResponse(w, r, http.StatusOK, s.infoFor(sess))
+}
+
+func (s *Server) shareStatus(w http.ResponseWriter, r *http.Request) {
+	writeResponse(w, r, http.StatusOK, s.ShareNode.Status(r.Context()))
+}
+
+func (s *Server) shareStart(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64*1024))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "body", err.Error())
+		return
+	}
+	var req proto.StartShareNodeReq
+	if len(body) > 0 {
+		if err := decodeRequest(r, body, &req); err != nil {
+			writeError(w, r, http.StatusBadRequest, "decode", err.Error())
+			return
+		}
+	}
+	if err := s.ShareNode.Start(r.Context(), req); err != nil {
+		writeError(w, r, http.StatusBadRequest, "share_start", err.Error())
+		return
+	}
+	writeResponse(w, r, http.StatusOK, s.ShareNode.Status(r.Context()))
+}
+
+func (s *Server) shareDestroy(w http.ResponseWriter, r *http.Request) {
+	if err := s.ShareNode.Destroy(r.Context()); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "share_destroy", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) update(w http.ResponseWriter, r *http.Request) {

@@ -240,6 +240,32 @@ type UpdateSessionReq struct {
 	Shared *bool `cbor:"shared,omitempty" json:"shared,omitzero"`
 }
 
+// ShareNode is the state of tstermd's sharing node, a second Tailscale
+// node in its process through which the owner shares sessions with other
+// people (GET /v1/share).
+type ShareNode struct {
+	// State is "off", "starting", "login" (it needs logging in, at
+	// LoginURL), "running" (at URL), or "failed" (with Error).
+	State string `cbor:"st" json:"state"`
+
+	Hostname string   `cbor:"host,omitempty" json:"hostname,omitzero"` // its name, or the suggested one when off
+	Tags     []string `cbor:"tags,omitempty" json:"tags,omitzero"`
+	URL      string   `cbor:"url,omitempty" json:"url,omitzero"`
+	LoginURL string   `cbor:"login,omitempty" json:"loginURL,omitzero"`
+	Error    string   `cbor:"err,omitempty" json:"error,omitzero"`
+}
+
+// StartShareNodeReq is the body of POST /v1/share, which starts the
+// sharing node. All its fields are optional.
+type StartShareNodeReq struct {
+	Hostname string   `cbor:"host,omitempty" json:"hostname,omitzero"`
+	Tags     []string `cbor:"tags,omitempty" json:"tags,omitzero"`
+
+	// AuthKey, if set, logs the node in, instead of a person at the
+	// login URL. It's used only to log in, and isn't kept.
+	AuthKey string `cbor:"key,omitempty" json:"authKey,omitzero"`
+}
+
 // SessionInfo is returned by POST /v1/sessions and by GET /v1/sessions/{id}.
 // Token is the per-session capability that UDP clients must echo back in
 // every Hello.

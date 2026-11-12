@@ -53,6 +53,10 @@
 {{if gt $.MoreEnded 0}}<p class="dim">And {{$.MoreEnded}} older.</p>{{end}}
 <p class="dim">Ended sessions keep their last screen and history, to look at, for a year.</p>
 {{end}}
+{{if .ShareNode}}
+<h2 id="sharing">Sharing node</h2>
+<div id="sharenode" class="sharenode"><p class="dim">…</p></div>
+{{end}}
 {{define "share"}}{{if .ShareURL}}<button type="button" class="share{{if .Shared}} shared{{end}}" data-id="{{.ID}}" data-shared="{{.Shared}}" title="{{if .Shared}}Shared, read-only, at {{.ShareURL}}. Click to stop sharing.{{else}}Share, read-only, at {{.ShareURL}}{{end}}">{{if .Shared}}shared{{else}}share…{{end}}</button>{{end}}{{end}}
 <script src="/static/common.js"></script>
 <script>
@@ -114,6 +118,117 @@ async function setShared(id, shared) {
   if (!resp.ok) alert(`Can't change sharing: ${resp.statusText}`);
   return resp.ok;
 }
+
+// The sharing node: a second Tailscale node in tstermd, through which the
+// owner shares sessions, read-only, with other people. Its section shows
+// what it's doing, and starts or destroys it.
+const shareNodeEl = document.getElementById("sharenode");
+let shareNodeState = "";
+async function showShareNode() {
+  let st;
+  try {
+    const resp = await fetch("/v1/share", {headers: {"Accept": "application/json"}});
+    if (!resp.ok) throw new Error(resp.statusText);
+    st = await resp.json();
+  } catch (err) {
+    shareNodeEl.replaceChildren(para(`Can't get the sharing node's state: ${err.message}`, "dim"));
+    return;
+  }
+  // Its share buttons come and go with it, in the page's rows.
+  if (shareNodeState && shareNodeState !== st.state && (st.state === "running" || shareNodeState === "running")) {
+    location.reload();
+    return;
+  }
+  shareNodeState = st.state;
+  if (st.state === "off") {
+    renderShareForm(st);
+    return;
+  }
+  const tags = st.tags?.length ? ` (${st.tags.join(", ")})` : "";
+  const parts = [];
+  switch (st.state) {
+  case "running": {
+    const p = para(`Running as ${st.hostname}${tags}, at `);
+    const a = document.createElement("a");
+    a.href = a.textContent = st.url;
+    a.target = "_blank";
+    p.append(a, ". Share sessions with its people, read-only, from their rows above, or from their pages' ☰ menus. The people who can reach it see only what you share; you see everything, there, as here; tagged devices see nothing.");
+    parts.push(p);
+    break;
+  }
+  case "login": {
+    const p = para(`${st.hostname}${tags} needs logging in to the tailnet: `);
+    const a = document.createElement("a");
+    a.href = a.textContent = st.loginURL;
+    a.target = "_blank";
+    p.append(a);
+    parts.push(p, para("Log it in as you, or as whoever may advertise its tags. Or destroy it, and start it again with an auth key.", "dim"));
+    break;
+  }
+  case "failed":
+    parts.push(para(`${st.hostname}${tags} failed: ${st.error}`));
+    break;
+  default:
+    parts.push(para(`Starting ${st.hostname}${tags}…`));
+  }
+  const destroy = document.createElement("button");
+  destroy.type = "button";
+  destroy.className = "danger";
+  destroy.textContent = "Destroy sharing node";
+  destroy.addEventListener("click", async () => {
+    if (!confirm(`Destroy the sharing node ${st.hostname}?\n\nIt logs out of the tailnet and forgets its state. Everyone watching through it is cut off, and every shared session stops being shared.`)) return;
+    destroy.disabled = true;
+    const resp = await fetch("/v1/share", {method: "DELETE"});
+    if (!resp.ok) alert(`Can't destroy it: ${await errorText(resp)}`);
+    location.reload();
+  });
+  parts.push(destroy);
+  shareNodeEl.replaceChildren(...parts);
+  if (st.state === "starting" || st.state === "login") setTimeout(showShareNode, 2000);
+}
+function para(text, cls) {
+  const p = document.createElement("p");
+  p.textContent = text;
+  if (cls) p.className = cls;
+  return p;
+}
+async function errorText(resp) {
+  try { return (await resp.json()).message || resp.statusText; } catch { return resp.statusText; }
+}
+function renderShareForm(st) {
+  const form = document.createElement("form");
+  form.innerHTML = `
+<label>Name <input name="hostname" spellcheck="false" autocomplete="off"></label>
+<label>Tags <input name="tags" placeholder="tag:foo, optional" spellcheck="false" autocomplete="off"></label>
+<label>Auth key <input name="authKey" type="password" placeholder="optional" autocomplete="off"></label>
+<button type="submit">Start sharing node</button>`;
+  form.hostname.placeholder = st.hostname;
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const req = {
+      hostname: form.hostname.value.trim(),
+      tags: form.tags.value.split(/[\s,]+/).filter(Boolean),
+      authKey: form.authKey.value.trim(),
+    };
+    form.querySelector("button").disabled = true;
+    const resp = await fetch("/v1/share", {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "Accept": "application/json"},
+      body: JSON.stringify(req),
+    });
+    if (!resp.ok) {
+      alert(`Can't start it: ${await errorText(resp)}`);
+      form.querySelector("button").disabled = false;
+      return;
+    }
+    showShareNode();
+  });
+  shareNodeEl.replaceChildren(
+    para("Share sessions, read-only, with people your machines are closed to: tstermd runs a second Tailscale node of its own, which you can tag so that they can reach it. You get full access there too, as you; anyone else sees only what you share; tagged devices see nothing.", "dim"),
+    form,
+    para("Without an auth key, it gives you a URL to log it in at. The name defaults to the one shown; the node serves https://NAME.your-tailnet/ (and http://NAME/, which redirects there).", "dim"));
+}
+if (shareNodeEl) showShareNode();
 
 // Delete an ended session for good.
 for (const b of document.querySelectorAll("button.purge")) {
