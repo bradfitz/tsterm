@@ -264,10 +264,21 @@ encoding, palette), tested against real handlers. Not the UDP protocol yet.
   Closing a running session's tab flies a copy of it into Other; a
   double-click renames the current tab; strikethrough is drawn over the
   grid.
+- **Fonts:** Fyne draws text in its theme's font and falls back to its
+  bundled ones (DejaVu Sans Mono; EmojiOne, in color; a small symbol font)
+  and then to system fonts, but only those it indexes under the
+  character's script, so symbols in the Common script, as Claude Code's
+  ⏵ ⎿ ⧉ and braille spinners, came out as boxes even where the system has
+  them. Cells whose characters DejaVu Sans Mono lacks, and that aren't
+  emoji (by default, or with U+FE0F), are drawn in Fyne's Symbol text
+  style, for which the theme returns an embedded font that covers them,
+  Tsterm Symbols, JuliaMono's symbol ranges (OFL; 440 KB, subset and
+  renamed as `internal/gui/fonts/README` says), in `internal/gui/fonts.go`.
 - **Gaps vs. the web UI:** no audible bell (Fyne has no audio); no
   overline or curly/dotted/dashed/double underlines (TextGrid draws one
-  kind); no emoji (Fyne's font), and a colored background can cover a wide
-  character's right half; Other's count doesn't pulse; no
+  kind); a cell is one rune, so emoji sequences (skin tones, ZWJ) show
+  only their first; a colored background can cover a wide character's
+  right half; Other's count doesn't pulse; no
   mobile extra-keys bar; IME composition untested; the auto-fit preference
   isn't shared with browsers.
 

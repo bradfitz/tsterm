@@ -112,6 +112,15 @@ func (t darkTheme) Color(n fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color
 	return t.Theme.Color(n, theme.VariantDark)
 }
 
+// Font returns, for the Symbol style, a font for the symbols the terminal
+// needs that Fyne's fonts lack (see fonts.go).
+func (t darkTheme) Font(s fyne.TextStyle) fyne.Resource {
+	if s.Symbol {
+		return symbolFont
+	}
+	return t.Theme.Font(s)
+}
+
 func (a *App) build() {
 	a.term = newTerm(a)
 	a.status = widget.NewLabel("")

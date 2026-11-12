@@ -224,22 +224,26 @@ type cellStyle struct {
 	bold       bool
 	italic     bool
 	underlined bool
+	symbol     bool // drawn in the symbol font (see fonts.go)
 }
 
-func (t *Term) style(st vt.Style, invert bool) *widget.CustomTextGridStyle {
+func (t *Term) style(st vt.Style, invert, symbol bool) *widget.CustomTextGridStyle {
 	fg, bg, defaultBg := wsclient.Colors(st)
 	if invert {
 		fg, bg, defaultBg = bg, fg, false
 	}
 	k := cellStyle{fg: fg, bg: bg, defaultBg: defaultBg,
-		bold: st.Attrs&vt.AttrBold != 0, italic: st.Attrs&vt.AttrItalic != 0, underlined: st.Underline != vt.UnderlineNone}
+		bold: st.Attrs&vt.AttrBold != 0, italic: st.Attrs&vt.AttrItalic != 0, underlined: st.Underline != vt.UnderlineNone,
+		symbol: symbol}
 	if s, ok := t.styles[k]; ok {
 		return s
 	}
-	s := &widget.CustomTextGridStyle{
-		TextStyle: fyne.TextStyle{Monospace: true, Bold: k.bold, Italic: k.italic, Underline: k.underlined},
-		FGColor:   fg,
+	ts := fyne.TextStyle{Monospace: true, Bold: k.bold, Italic: k.italic, Underline: k.underlined}
+	if symbol {
+		// Fyne uses the Symbol style's font only without the others.
+		ts = fyne.TextStyle{Symbol: true, Underline: k.underlined}
 	}
+	s := &widget.CustomTextGridStyle{TextStyle: ts, FGColor: fg}
 	if !defaultBg {
 		s.BGColor = bg
 	}
@@ -311,7 +315,7 @@ func (t *Term) refreshView() {
 			if c.Width == 0 {
 				r = ' ' // the second column of a wide character
 			}
-			cells[x] = widget.TextGridCell{Rune: r, Style: t.style(c.Style, invert)}
+			cells[x] = widget.TextGridCell{Rune: r, Style: t.style(c.Style, invert, symbolCell(c.Grapheme, r))}
 			on := c.Style.Attrs&vt.AttrStrikethrough != 0
 			if on && struck < 0 {
 				struck = x

@@ -1,0 +1,14 @@
+TstermSymbols-Regular.ttf is a subset of JuliaMono Regular
+(https://github.com/cormullion/juliamono), renamed, as its license
+(OFL.txt, the SIL Open Font License 1.1) requires of modified versions,
+which reserves the name JuliaMono. It holds only the symbol ranges that
+Fyne's bundled DejaVu Sans Mono lacks glyphs in (see ../fonts.go), which
+keeps it small. It was made from JuliaMono 0.063 with fontTools:
+
+  pyftsubset JuliaMono-Regular.ttf \
+    --unicodes=U+2000-2BFF,U+2E00-2E7F,U+1FB00-1FBFF,U+FFFD \
+    --layout-features= --no-hinting --desubroutinize \
+    --output-file=TstermSymbols-Regular.ttf
+
+and then renamed, setting its name table's family to "Tsterm Symbols"
+(IDs 1, 3, 4, 6, and 16), keeping the copyright notice.
