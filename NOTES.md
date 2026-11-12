@@ -214,6 +214,53 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   the shim protocol sends them as base64 JSON, so a binary frame for the
   blob may be worth it.
 
+## Desktop GUI (Fyne)
+
+`cmd/tsterm-gui [HOST[:PORT]]` (`internal/gui`) is a Fyne desktop app for
+Linux, macOS, and Windows, started 2026-11-12, aiming at parity with the web
+UI. It talks to tstermd exactly as the web UI does, over HTTP and the
+WebSocket (with acks), through `pkg/wsclient`, a UI-free client core (API,
+stream, screen state, history loading, line wrapping, key/paste/mouse
+encoding, palette), tested against real handlers. Not the UDP protocol yet.
+
+- **Has:** tabs of the open set (close ×, Other (N), +), the session list
+  (new, demo, rename, reopen, delete forever), the terminal view (the rows in
+  view of history plus screen in a `TextGrid`, virtual scrolling with a
+  thumb, older history loading near the top, wheel and Shift-PageUp/Down,
+  pinned to the bottom, skip-ahead on floods), colors and bold/italic/
+  underline/faint/reverse/conceal, wide characters, cursor shapes with blink
+  and hollow when unfocused, the checkerboard, selection and copy
+  (Ctrl-Shift-C on Linux/Windows, Cmd-C on macOS) and paste (Ctrl-Shift-V,
+  Shift-Insert, Cmd-V, bracketed), xterm key encodings (Ctrl, Alt as ESC,
+  application cursor mode), mouse reports (SGR/X10; Shift selects instead),
+  hyperlinks (click), the bell (flash), notifications (in-window toast while
+  focused, else the system's), focus reports, auto-fit (on by default, a
+  per-install preference) and fit once with size leadership, view-only mode,
+  ended sessions (status, close), reconnecting. It remembers the last host.
+- **Building:** Fyne needs cgo. Linux builds natively (needs the GL/X11 dev
+  headers); Windows cross-compiles with mingw
+  (`CGO_ENABLED=1 GOOS=windows CC=x86_64-w64-mingw32-gcc`, add
+  `-ldflags=-H=windowsgui` for no console window); macOS needs Apple's SDK,
+  so only a Mac builds it. `CGO_ENABLED=0 GOOS=darwin go build -tags ci
+  ./internal/gui ./pkg/wsclient` type-checks all of the GUI but its `main`
+  (Fyne's `ci` tag swaps out its cgo parts). `.github/workflows/build.yml`
+  builds it on Linux, macOS, and Windows runners, and runs the tests.
+- **Tested** on Linux under Xvfb with xdotool and ImageMagick's `import`,
+  against a separate tstermd (`tstermd run -port 2300 -udp-port 2301
+  -run-dir /tmp/... -sessions-dir /tmp/... -shim-launch direct`), so as not
+  to resize real sessions: keys, mouse reports, notifications, history,
+  tabs, the list, ended sessions, copy and paste, auto-fit, the
+  checkerboard, reconnecting, renaming, and deleting. Windows and macOS
+  builds are untested at run time.
+- **Gaps vs. the web UI:** no audible bell (Fyne has no audio); no
+  strikethrough, overline, or curly/dotted/dashed underlines (TextGrid);
+  no emoji (Fyne's font), and a colored background can cover a wide
+  character's right half; no horizontal scrolling when the session is
+  wider than the window (it's clipped); no fly-into-Other animation; renaming
+  is from the list only (no double-clicking the tab); no mobile extra-keys
+  bar; IME composition untested; the auto-fit preference isn't shared with
+  browsers.
+
 ## Upcoming work
 
 - **Frozen sessions, more.** "Restart" a frozen session in the same
