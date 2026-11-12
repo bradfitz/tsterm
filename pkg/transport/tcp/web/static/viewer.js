@@ -80,7 +80,7 @@ const BOLD = 1, FAINT = 2, ITALIC = 4, REVERSE = 32, CONCEAL = 64, STRIKE = 128;
 
 const screenEl = document.getElementById("screen");
 const statusEl = document.getElementById("status");
-const sessionID = screenEl.dataset.id;
+let sessionID = screenEl.dataset.id;
 let sessionName = screenEl.dataset.name;
 
 // The screen being displayed: its size, rows of cells, the cursor, and the
@@ -188,10 +188,18 @@ function applyDelta(d) {
   if (d.rz) renderAll(); else touched.forEach(rerenderRow);
 }
 
-// Options, from the URL: ?ro for view-only, ?fit to start owning the size.
+// Options, from the URL: ?ro for view-only, ?fit to fit the session to the
+// window once, as for a new session.
 const params = new URLSearchParams(location.search);
 let writable = !params.has("ro");
-let sizeOwner = params.has("fit");
+let fitOnConnect = params.has("fit");
+if (fitOnConnect) history.replaceState(history.state, "", location.pathname + location.search.replace(/[?&]fit\b/, "").replace(/^&/, "?"));
+
+// Auto-fit is a preference for the whole web app, shared by all its
+// windows (through localStorage), but only writable viewers apply it.
+const autoFitKey = "tsterm.autofit";
+let autoFit = localStorage.getItem(autoFitKey) === "1";
+let sizeOwner = autoFit && writable;
 
 let ws = null;
 
@@ -201,10 +209,13 @@ function connect() {
   const sock = ws = new WebSocket(`${proto}//${location.host}/v1/sessions/${encodeURIComponent(sessionID)}/ws${q}`);
   sock.binaryType = "arraybuffer";
   sock.onopen = () => {
+    if (ws !== sock) return;
     showStatus();
-    if (sizeOwner) fit();
+    if (sizeOwner || fitOnConnect) fit();
+    fitOnConnect = false;
   };
   sock.onmessage = (ev) => {
+    if (ws !== sock) return; // replaced, as by switching sessions
     const env = decodeCBOR(ev.data);
     if (env[6]) applySnapshot(env[6]["s_"]);
     else if (env[5]) applyDelta(env[5].d);
@@ -554,19 +565,30 @@ function updateCornerHandle() {
 const autoFitEl = document.getElementById("autofit");
 const fitOnceEl = document.getElementById("fitonce");
 
+// setAutoFit sets the auto-fit preference, for this and the app's other
+// windows (save), or as another window saved it.
+function setAutoFit(on, save) {
+  autoFit = on;
+  if (save) localStorage.setItem(autoFitKey, on ? "1" : "0");
+  setSizeOwner(autoFit && writable);
+}
+window.addEventListener("storage", (ev) => {
+  if (ev.key === autoFitKey) setAutoFit(ev.newValue === "1", false);
+});
+
 function setSizeOwner(on) {
   sizeOwner = on;
   for (const b of document.querySelectorAll(".autofit")) {
     b.classList.toggle("on", on);
     b.title = on
-      ? "Auto-fit is on: the session is sized to this window. Click to stop."
-      : "Auto-fit is off. Click to size the session to this window, and keep it so.";
+      ? "Auto-fit is on: sessions are sized to their windows. Click to stop (in all windows)."
+      : "Auto-fit is off. Click to size sessions to their windows, and keep them so (in all windows).";
   }
   showStatus();
   if (on) fit();
 }
 for (const b of document.querySelectorAll(".autofit")) {
-  b.addEventListener("click", () => setSizeOwner(!sizeOwner));
+  b.addEventListener("click", () => setAutoFit(!autoFit, true));
 }
 setSizeOwner(sizeOwner);
 
@@ -627,7 +649,7 @@ function showMode() {
 }
 modeEl.addEventListener("click", () => {
   writable = !writable;
-  if (!writable && sizeOwner) setSizeOwner(false);
+  setSizeOwner(autoFit && writable);
   showMode();
   reconnect();
   if (writable && !touch) focusKeyboard();
@@ -819,12 +841,20 @@ async function refreshTabs() {
     el.textContent = tabLabel(s);
     el.title = s.id + (s.name ? ` (${s.name})` : "");
     el.href = `/s/${encodeURIComponent(s.id)}`;
+    el.addEventListener("click", (ev) => {
+      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return; // a new tab or window
+      ev.preventDefault();
+      switchTo(s.id, s.name || "", true);
+    });
     return el;
   });
   const add = document.createElement("button");
   add.textContent = "+";
   add.title = "New session (shift-click for the demo)";
-  add.addEventListener("click", (ev) => newSession(ev.shiftKey ? demoName : ""));
+  add.addEventListener("click", (ev) => newSession(ev.shiftKey ? demoName : "", (id, name) => {
+    fitOnConnect = true;
+    switchTo(id, name, true);
+  }));
   tabsEl.replaceChildren(...tabs, add);
   if (!tabsScrolled) {
     tabsScrolled = true;
@@ -862,6 +892,28 @@ function showTabsOverflow() {
 }
 tabsEl.addEventListener("scroll", showTabsOverflow);
 new ResizeObserver(showTabsOverflow).observe(tabsEl);
+
+// switchTo shows another session in this page, without reloading it, and
+// adds it to the history (push) unless it came from there. The new
+// connection's first message is the session's whole screen.
+function switchTo(id, name, push) {
+  if (id === sessionID) return;
+  sessionID = screenEl.dataset.id = id;
+  sessionName = name;
+  if (push) history.pushState({id, name}, "", `/s/${encodeURIComponent(id)}${location.search}`);
+  document.title = `${name || id} · tsterm`;
+  mouseButton = -1;
+  rows = []; cursor = null; modes = {};
+  screenEl.replaceChildren();
+  statusEl.textContent = "connecting…";
+  reconnect();
+  refreshTabs();
+}
+history.replaceState({id: sessionID, name: sessionName}, "");
+window.addEventListener("popstate", (ev) => {
+  if (ev.state && ev.state.id) switchTo(ev.state.id, ev.state.name, false);
+  else location.reload();
+});
 
 // The wheel scrolls the tabs sideways.
 tabsEl.addEventListener("wheel", (ev) => {

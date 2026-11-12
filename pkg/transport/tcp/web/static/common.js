@@ -51,8 +51,9 @@ function startRename(el, id, current, onDone) {
 const demoName = "_tsterm_demo";
 
 // newSession starts a session, named name unless it is empty, and opens
-// it, sized to the browser window: nothing else owns its size yet.
-async function newSession(name) {
+// it with open, by default by going to its page. Pages fit new sessions to
+// the window once: nothing else owns their size yet.
+async function newSession(name, open = (id) => { location.href = `/s/${encodeURIComponent(id)}?fit`; }) {
   const resp = await fetch("/v1/sessions", {
     method: "POST",
     headers: {"Content-Type": "application/json", "Accept": "application/json"},
@@ -65,5 +66,5 @@ async function newSession(name) {
     return;
   }
   const info = await resp.json();
-  location.href = `/s/${encodeURIComponent(info.id)}?fit`;
+  open(info.id, info.name || "");
 }

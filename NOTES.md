@@ -42,7 +42,11 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   active sessions in the one header bar (scrolling sideways, by wheel too,
   when they don't fit; double-click the current one to rename it). The
   cursor follows the program's shape and blink, like Ghostty: an inverted
-  block by default, hollow while the page isn't focused. Auto-fit fills the whole terminal area; its toggle, and a
+  block by default, hollow while the page isn't focused. Tabs switch
+  sessions in place (a new WebSocket, `history.pushState`; back and forward
+  work), without reloading the page. Auto-fit is one preference for the
+  whole web app, shared by its windows through localStorage, and applied
+  by writable viewers. It fills the whole terminal area; its toggle, and a
   one-time fit when the terminal is too big to see whole, pop up near the
   area's bottom-right corner (on touch devices, a key in the extra-keys bar);
   when the terminal is smaller than the area, a ⇲ toggle also sits in the
@@ -182,7 +186,9 @@ the web UI, where browsers restrict or lack the equivalent.
   macOS/BSDs (`getpeereid`) TODO in `pkg/shim/peer_other.go`.
 - Input could be applied twice if the server applies a keystroke, its ack is
   lost, and the link stays one-way broken for the whole idle timeout.
-- Two viewers with auto-fit on fight over the session's size: each refits
+- Two viewers with auto-fit on fight over the session's size (more often
+  now that auto-fit is app-wide, as two windows on one session both have
+  it): each refits
   to its own window whenever its area changes, so the size flips to
   whichever resized last. Idea: one auto-fit leader per session, tracked by
   the server. Turning auto-fit on, or interacting with a viewer (typing,
