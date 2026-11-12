@@ -81,6 +81,7 @@ const BOLD = 1, FAINT = 2, ITALIC = 4, REVERSE = 32, CONCEAL = 64, STRIKE = 128;
 const screenEl = document.getElementById("screen");
 const statusEl = document.getElementById("status");
 const sessionID = screenEl.dataset.id;
+let sessionName = screenEl.dataset.name;
 
 // The screen being displayed: its size, rows of cells, the cursor, and the
 // terminal modes (a vt.Modes: k is application cursor keys, p bracketed
@@ -707,7 +708,7 @@ const notifyEl = document.getElementById("notify");
 const toastsEl = document.getElementById("toasts");
 
 function showNotification(n) {
-  const label = nameEl.textContent || sessionID;
+  const label = sessionName || sessionID;
   if (document.hasFocus() && !document.hidden) {
     showToast(n.t || label, n.b || "");
     return;
@@ -788,6 +789,7 @@ function tabLabel(s) {
 }
 
 async function refreshTabs() {
+  if (tabsEl.querySelector("input")) return; // renaming
   let list;
   try {
     const resp = await fetch("/v1/sessions?sort=activity", {headers: {"Accept": "application/json"}});
@@ -796,12 +798,16 @@ async function refreshTabs() {
   } catch {
     return;
   }
-  const tabs = list.filter(s => s.active).slice(0, maxTabs).map(s => {
-    const el = document.createElement(s.id === sessionID ? "span" : "a");
+  if (tabsEl.querySelector("input")) return;
+  const shown = list.filter(s => s.active).slice(0, maxTabs);
+  const self = list.find(s => s.id === sessionID);
+  if (self && !shown.includes(self)) shown.unshift(self);
+  const tabs = shown.map(s => {
+    if (s.id === sessionID) return currentTab(tabLabel(s));
+    const el = document.createElement("a");
     el.textContent = tabLabel(s);
     el.title = s.id + (s.name ? ` (${s.name})` : "");
-    if (s.id === sessionID) el.className = "current";
-    else el.href = `/s/${encodeURIComponent(s.id)}`;
+    el.href = `/s/${encodeURIComponent(s.id)}`;
     return el;
   });
   const add = document.createElement("button");
@@ -809,20 +815,48 @@ async function refreshTabs() {
   add.title = "New session (shift-click for the demo)";
   add.addEventListener("click", (ev) => newSession(ev.shiftKey ? demoName : ""));
   tabsEl.replaceChildren(...tabs, add);
+  if (!tabsScrolled) {
+    tabsScrolled = true;
+    tabsEl.querySelector(".current")?.scrollIntoView({inline: "nearest", block: "nearest"});
+  }
+  showTabsOverflow();
 }
+let tabsScrolled = false;
+
+// currentTab returns the tab for this session, which renames it when
+// double-clicked.
+function currentTab(label) {
+  const el = document.createElement("span");
+  el.className = "current";
+  el.textContent = label;
+  el.title = "Double-click to rename";
+  el.addEventListener("dblclick", () => {
+    if (el.querySelector("input")) return;
+    startRename(el, sessionID, sessionName, (name) => {
+      sessionName = name;
+      el.textContent = name || tabLabel({id: sessionID});
+      document.title = `${name || sessionID} · tsterm`;
+      refreshTabs();
+    });
+  });
+  return el;
+}
+tabsEl.replaceChildren(currentTab(sessionName || tabLabel({id: sessionID})));
+
+// showTabsOverflow marks the ends of the tabs that have more to scroll to.
+function showTabsOverflow() {
+  const left = tabsEl.scrollLeft;
+  tabsEl.classList.toggle("more-left", left > 1);
+  tabsEl.classList.toggle("more-right", left + tabsEl.clientWidth < tabsEl.scrollWidth - 1);
+}
+tabsEl.addEventListener("scroll", showTabsOverflow);
+new ResizeObserver(showTabsOverflow).observe(tabsEl);
+
+// The wheel scrolls the tabs sideways.
+tabsEl.addEventListener("wheel", (ev) => {
+  if (ev.deltaX !== 0 || tabsEl.scrollWidth <= tabsEl.clientWidth) return;
+  tabsEl.scrollLeft += ev.deltaY;
+  ev.preventDefault();
+}, {passive: false});
 refreshTabs();
 setInterval(refreshTabs, 5000);
-
-// Double-click the session's name or ID to rename it.
-const identEl = document.getElementById("ident");
-const nameEl = document.getElementById("name");
-identEl.addEventListener("dblclick", () => {
-  if (identEl.querySelector("input")) return;
-  const saved = Array.from(identEl.childNodes);
-  startRename(identEl, sessionID, nameEl.textContent, (name) => {
-    nameEl.textContent = name;
-    identEl.replaceChildren(...saved);
-    document.title = `${name || sessionID} · tsterm`;
-    refreshTabs();
-  });
-});

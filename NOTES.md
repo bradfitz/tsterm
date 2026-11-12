@@ -39,7 +39,8 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
 - **Web UI** (`http://HOST:2200/`, owner only): session list with renaming
   and creation; per-session viewer with typing (on by default), view-only
   mode, auto-fit (size-owning) mode, mouse input, and tabs of recently
-  active sessions. Auto-fit fills the whole terminal area; its toggle, and a
+  active sessions in the one header bar (scrolling sideways, by wheel too,
+  when they don't fit; double-click the current one to rename it). Auto-fit fills the whole terminal area; its toggle, and a
   one-time fit when the terminal is too big to see whole, pop up near the
   area's bottom-right corner (on touch devices, a key in the extra-keys bar);
   when the terminal is smaller than the area, a ⇲ toggle also sits in the

@@ -10,15 +10,23 @@ a { color: inherit; }
 /* The viewer fills the window: header, tabs, and then the terminal area,
    which scrolls by itself if the terminal is bigger than the window. */
 body.viewer { margin: 0; background: #000; color: #ddd; height: 100vh; display: flex; flex-direction: column; }
-body.viewer header { font-size: .85rem; padding: .4rem .8rem; background: #222; display: flex; gap: 1rem; align-items: baseline; }
-body.viewer header #status { margin-left: auto; }
-body.viewer #ident { cursor: text; }
-body.viewer #ident input { font: inherit; }
-nav#tabs { font-size: .8rem; padding: .25rem .8rem; background: #181818; display: flex; gap: .3rem; flex-wrap: wrap; min-height: 1.4rem; align-items: center; }
-nav#tabs a, nav#tabs span { padding: .1rem .5rem; border-radius: .3rem; text-decoration: none; color: #aaa; }
+body.viewer header { font-size: .85rem; padding: .3rem .8rem; background: #222; display: flex; gap: 1rem; align-items: center; white-space: nowrap; }
+body.viewer header .home { flex-shrink: 0; }
+body.viewer header button { flex-shrink: 0; }
+/* The tabs take the header's spare room and scroll sideways (with the
+   mouse wheel too) when they don't fit. */
+nav#tabs { flex: 1; min-width: 0; display: flex; gap: .3rem; align-items: center; overflow-x: auto; scrollbar-width: none; }
+nav#tabs::-webkit-scrollbar { display: none; }
+/* Fades at the ends that have more tabs to scroll to. */
+nav#tabs.more-left { mask-image: linear-gradient(to right, transparent, #000 1.5rem); }
+nav#tabs.more-right { mask-image: linear-gradient(to left, transparent, #000 1.5rem); }
+nav#tabs.more-left.more-right { mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent); }
+nav#tabs a, nav#tabs span { padding: .1rem .5rem; border-radius: .3rem; text-decoration: none; color: #aaa; flex-shrink: 0; }
+nav#tabs .current { cursor: text; }
+nav#tabs input { font: inherit; }
 nav#tabs a:hover { background: #333; color: #fff; }
 nav#tabs .current { background: #444; color: #fff; }
-nav#tabs button { font: inherit; padding: 0 .5rem; color: #aaa; background: none; border: 1px solid #444; border-radius: .3rem; cursor: pointer; }
+nav#tabs button { font: inherit; flex-shrink: 0; padding: 0 .5rem; color: #aaa; background: none; border: 1px solid #444; border-radius: .3rem; cursor: pointer; }
 nav#tabs button:hover { color: #fff; border-color: #888; }
 body.viewer header button { font: inherit; color: #ccc; background: #333; border: 0; border-radius: .3rem; padding: .1rem .5rem; cursor: pointer; }
 body.viewer header button:hover { background: #444; color: #fff; }
@@ -115,14 +123,12 @@ nav#extrakeys button, header .kbdtoggle {
 nav#extrakeys button.on, .kbdtoggle.on { color: #000; background: #8c8; }
 
 /* Narrow screens. */
-nav#tabs { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; flex-shrink: 0; }
 body.viewer header { flex-shrink: 0; }
 @media (max-width: 640px) {
-  body.viewer header { gap: .5rem; padding: .35rem .5rem; flex-wrap: wrap; }
-  body.viewer header #ident code { display: none; }
+  body.viewer header { gap: .5rem; padding: .35rem .5rem; }
   body.viewer header .home { font-size: 0; }
   body.viewer header .home::before { content: "←"; font-size: .85rem; }
-  body.viewer header #status { margin-left: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.viewer header #status { display: none; }
   #toasts { top: auto; bottom: 4rem; right: .5rem; left: .5rem; }
   body:not(.viewer) { margin: 1rem; }
   table th:nth-child(5), table td:nth-child(5),
