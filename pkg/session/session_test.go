@@ -217,6 +217,56 @@ func TestSessionResize(t *testing.T) {
 	}
 }
 
+func TestSizerLeader(t *testing.T) {
+	m, _ := newTestManager(t)
+	s, err := m.Create(Config{PTY: pty.Config{Command: "/bin/cat"}, Rows: 10, Cols: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	checkSize := func(step string, rows, cols int) {
+		t.Helper()
+		if r, c := s.Size(); r != rows || c != cols {
+			t.Errorf("%s: size = %dx%d, want %dx%d", step, r, c, rows, cols)
+		}
+	}
+	a, b := s.NewSizer("a"), s.NewSizer("b")
+
+	// With no leader, the first to want a size takes the lead.
+	a.Want(30, 100)
+	checkSize("a wants", 30, 100)
+	if leads, _ := a.Leader(); !leads {
+		t.Error("a doesn't lead after wanting a size first")
+	}
+	// Others' wants wait until they lead.
+	b.Want(40, 120)
+	checkSize("b wants", 30, 100)
+	if leads, other := b.Leader(); leads || other != "a" {
+		t.Errorf("b.Leader() = %v, %q; want false, \"a\"", leads, other)
+	}
+	b.Lead()
+	checkSize("b leads", 40, 120)
+	a.Want(31, 101)
+	checkSize("a wants again", 40, 120)
+	a.Lead()
+	checkSize("a leads", 31, 101)
+
+	// A leader without a preference keeps the size.
+	b.Want(0, 0)
+	b.Lead()
+	checkSize("b leads without a preference", 31, 101)
+	a.Want(32, 102)
+	checkSize("a wants while b leads", 31, 101)
+
+	// Once the leader goes, the next to want a size leads.
+	b.Close()
+	if leads, other := a.Leader(); leads || other != "" {
+		t.Errorf("after b closed, a.Leader() = %v, %q", leads, other)
+	}
+	a.Want(33, 103)
+	checkSize("a wants after b closed", 33, 103)
+}
+
 func TestWriteInputRoundtrip(t *testing.T) {
 	m, _ := newTestManager(t)
 	s, err := m.Create(Config{PTY: pty.Config{Command: "/bin/cat"}})

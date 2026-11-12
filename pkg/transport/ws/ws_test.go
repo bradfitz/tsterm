@@ -202,6 +202,86 @@ func TestWritableViewer(t *testing.T) {
 	}
 }
 
+// readSizing reads frames until a Sizing frame, and returns it.
+func readSizing(t *testing.T, conn *websocket.Conn, ctx context.Context) proto.Sizing {
+	t.Helper()
+	for {
+		if env := readEnv(t, conn, ctx); env.Sizing != nil {
+			return *env.Sizing
+		}
+	}
+}
+
+// waitSize waits for sess to be rows by cols.
+func waitSize(t *testing.T, sess *session.Session, rows, cols int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		r, c := sess.Size()
+		if r == rows && c == cols {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("size = %dx%d, want %dx%d", r, c, rows, cols)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestSizeLeader checks that of two viewers that want different sizes,
+// only the last one used sets the size, and that each is told whether it
+// does.
+func TestSizeLeader(t *testing.T) {
+	srv, hts := mountTestServer(t)
+	sess, err := srv.Manager.Create(session.Config{PTY: pty.Config{Command: "/bin/cat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := "ws://" + hts.Listener.Addr().String() + "/v1/sessions/" + string(sess.ID()) + "/ws?write=1"
+	a, ctx, cancel := dialWS(t, url)
+	defer cancel()
+	defer a.Close(websocket.StatusNormalClosure, "")
+	b, _, cancelB := dialWS(t, url)
+	defer cancelB()
+	defer b.Close(websocket.StatusNormalClosure, "")
+	if s := readSizing(t, a, ctx); s.Leader {
+		t.Errorf("a's first Sizing = %+v, before anyone wants a size", s)
+	}
+	readSizing(t, b, ctx)
+
+	send := func(c *websocket.Conn, msg string) {
+		t.Helper()
+		if err := c.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(a, `{"resize":{"rows":30,"cols":100},"lead":true}`)
+	waitSize(t, sess, 30, 100)
+	if s := readSizing(t, a, ctx); !s.Leader {
+		t.Errorf("a's Sizing after leading = %+v", s)
+	}
+	if s := readSizing(t, b, ctx); s.Leader || s.Other != "a browser" {
+		t.Errorf("b's Sizing after a leads = %+v", s)
+	}
+
+	// b's size waits until b is used: here, typed into.
+	send(b, `{"resize":{"rows":40,"cols":120}}`)
+	time.Sleep(100 * time.Millisecond)
+	waitSize(t, sess, 30, 100)
+	send(b, `{"input":"x"}`)
+	waitSize(t, sess, 40, 120)
+	if s := readSizing(t, a, ctx); s.Leader {
+		t.Errorf("a's Sizing after b typed = %+v", s)
+	}
+	if s := readSizing(t, b, ctx); !s.Leader {
+		t.Errorf("b's Sizing after typing = %+v", s)
+	}
+
+	// And a's comes back when a is used again.
+	send(a, `{"lead":true}`)
+	waitSize(t, sess, 30, 100)
+}
+
 // TestBellAndNotificationAlone checks that a bell and a notification reach
 // viewers even when nothing on the screen changes with them.
 func TestBellAndNotificationAlone(t *testing.T) {

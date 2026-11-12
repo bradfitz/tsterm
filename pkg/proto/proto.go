@@ -39,6 +39,7 @@ type Envelope struct {
 	State    *State    `cbor:"8,keyasint,omitempty"`
 	StateAck *StateAck `cbor:"9,keyasint,omitempty"`
 	Detach   *Detach   `cbor:"10,keyasint,omitempty"`
+	Sizing   *Sizing   `cbor:"11,keyasint,omitempty"`
 }
 
 // Hello is the first packet a client sends on UDP attach. The server uses
@@ -144,6 +145,14 @@ type Detach struct{}
 // string (typically the child's exit error or "closed").
 type Ended struct {
 	Status string `cbor:"s"`
+}
+
+// Sizing tells a WebSocket viewer whether its size requests apply: of the
+// clients that want a size, only the one the user used last, the leader,
+// sets it. The server sends it on connecting and when it changes.
+type Sizing struct {
+	Leader bool   `cbor:"l,omitempty"`
+	Other  string `cbor:"o,omitempty"` // describes the leader, if another client
 }
 
 // EndedNoSession is the Ended Status the UDP server sends in reply to a

@@ -227,28 +227,34 @@ func (m *mux) attach(addr netip.AddrPort, h *proto.Hello) {
 		m.srv.Logf("udp: attach from %v: bad token", addr)
 		return
 	}
-	if h.Rows > 0 && h.Cols > 0 {
-		if rows, cols := sess.Size(); rows != h.Rows || cols != h.Cols {
-			if err := sess.Resize(h.Rows, h.Cols); err != nil {
-				m.srv.Logf("udp: attach resize: %v", err)
-			}
-		}
-	}
-
 	m.mu.Lock()
 	if prev, ok := m.clients[addr]; ok {
 		if prev.sess == sess && len(h.Nonce) > 0 && bytes.Equal(prev.nonce, h.Nonce) {
 			// A repeated Hello from a client we still know, such as
-			// one waking from sleep. Keep its state.
-			prev.deliver(proto.Envelope{Hello: h})
+			// one waking from sleep. Keep its state. Its size applies
+			// if it still leads, but waking up isn't using it, so it
+			// doesn't take the lead back.
 			m.mu.Unlock()
+			if h.Rows > 0 && h.Cols > 0 {
+				if err := prev.sizer.Want(h.Rows, h.Cols); err != nil {
+					m.srv.Logf("udp: attach resize: %v", err)
+				}
+			}
+			prev.deliver(proto.Envelope{Hello: h})
 			return
 		}
 		prev.stop()
 		delete(m.clients, addr)
 	}
-	m.addClientLocked(addr, sess, h.Nonce, h.InputAcked)
+	c := m.addClientLocked(addr, sess, h.Nonce, h.InputAcked)
 	m.mu.Unlock()
+	// Attaching is using the client, so its size applies.
+	if h.Rows > 0 && h.Cols > 0 {
+		c.sizer.Want(h.Rows, h.Cols)
+		if err := c.sizer.Lead(); err != nil {
+			m.srv.Logf("udp: attach resize: %v", err)
+		}
+	}
 	m.remember(sess, addr, h.Nonce)
 	if err := sess.MarkAttached(); err != nil {
 		m.srv.Logf("udp: recording attach: %v", err)
@@ -257,7 +263,7 @@ func (m *mux) attach(addr netip.AddrPort, h *proto.Hello) {
 
 // addClientLocked registers a client and starts its goroutine, which
 // begins by sending the client the whole screen.
-func (m *mux) addClientLocked(addr netip.AddrPort, sess *session.Session, nonce []byte, inputAcked uint64) {
+func (m *mux) addClientLocked(addr netip.AddrPort, sess *session.Session, nonce []byte, inputAcked uint64) *client {
 	ctx, cancel := context.WithCancel(m.ctx)
 	c := &client{
 		mux:      m,
@@ -270,10 +276,12 @@ func (m *mux) addClientLocked(addr netip.AddrPort, sess *session.Session, nonce 
 		seen:     time.Now(),
 		ackedSeq: inputAcked,
 		dirty:    true,
+		sizer:    sess.NewSizer("tsterm"),
 	}
 	c.watcher = sess.Watch(ctx)
 	m.clients[addr] = c
 	go c.run()
+	return c
 }
 
 // maxRemembered bounds the clients recorded per session.
@@ -407,6 +415,7 @@ type client struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	watcher *session.Watcher
+	sizer   *session.Sizer
 	inbox   chan proto.Envelope
 
 	seenMu sync.Mutex
@@ -500,6 +509,7 @@ func (c *client) sendAck() {
 
 // run is the client's event loop. It owns all screen-sync and input state.
 func (c *client) run() {
+	defer c.sizer.Close()
 	ticks := c.watcher.Ticks()
 	timer := time.NewTimer(0)
 	defer timer.Stop()
@@ -600,6 +610,10 @@ func (c *client) handleInput(in *proto.Input) {
 		return
 	}
 	if len(in.Keys) > 0 {
+		// Whoever types is who the user is using.
+		if err := c.sizer.Lead(); err != nil {
+			c.mux.srv.Logf("udp: resize: %v", err)
+		}
 		if _, err := c.sess.WriteInput(in.Keys); err != nil {
 			c.mux.srv.Logf("udp: write input: %v", err)
 			return
@@ -618,7 +632,9 @@ func (c *client) handleResize(rs *proto.Resize) {
 	if rs.Seq != c.ackedSeq+1 {
 		return
 	}
-	if err := c.sess.Resize(rs.Rows, rs.Cols); err != nil {
+	// The terminal's window changing size is the user using it.
+	c.sizer.Want(rs.Rows, rs.Cols)
+	if err := c.sizer.Lead(); err != nil {
 		c.mux.srv.Logf("udp: resize: %v", err)
 		return
 	}

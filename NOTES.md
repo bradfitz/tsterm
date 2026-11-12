@@ -46,7 +46,12 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
   sessions in place (a new WebSocket, `history.pushState`; back and forward
   work), without reloading the page. Auto-fit is one preference for the
   whole web app, shared by its windows through localStorage, and applied
-  by writable viewers. It fills the whole terminal area; its toggle, and a
+  by writable viewers. Clients that want different sizes don't fight: each
+  has a `session.Sizer` recording the size it wants, and only the leader's
+  applies, the client the user used last (typed into, focused, resized
+  while in front, attached, or turned auto-fit on in). Viewers learn
+  whether they lead from `proto.Sizing` frames and say who does. It fills
+  the whole terminal area; its toggle, and a
   one-time fit when the terminal is too big to see whole, pop up near the
   area's bottom-right corner (on touch devices, a key in the extra-keys bar);
   when the terminal is smaller than the area, a ⇲ toggle also sits in the
@@ -186,15 +191,10 @@ the web UI, where browsers restrict or lack the equivalent.
   macOS/BSDs (`getpeereid`) TODO in `pkg/shim/peer_other.go`.
 - Input could be applied twice if the server applies a keystroke, its ack is
   lost, and the link stays one-way broken for the whole idle timeout.
-- Two viewers with auto-fit on fight over the session's size (more often
-  now that auto-fit is app-wide, as two windows on one session both have
-  it): each refits
-  to its own window whenever its area changes, so the size flips to
-  whichever resized last. Idea: one auto-fit leader per session, tracked by
-  the server. Turning auto-fit on, or interacting with a viewer (typing,
-  resizing its window, mousing over it), makes that viewer the leader. Only
-  the leader's resizes apply; others show the leader's size (checkerboard
-  or fit once) and say who has it. The CLI's resizes should take part too.
+- Size leadership ignores mousing over a window (only focus, typing,
+  resizing a focused window, attaching, and auto-fit or fit once count),
+  so that moving the mouse across windows doesn't flip sizes. Revisit if
+  focus turns out not to be enough.
 - Hyperlink URIs and graphemes over 256 bytes are dropped by the glue.
 - No remote yet; history before 2026-11-10 was reconstructed approximately.
 

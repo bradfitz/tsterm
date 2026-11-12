@@ -117,6 +117,11 @@ type Session struct {
 	watchers map[uint64]*Watcher
 	nextWID  uint64
 
+	// sizeMu guards leader and every Sizer's wanted size, and serializes
+	// the resizes they make.
+	sizeMu sync.Mutex
+	leader *Sizer // or nil
+
 	// waitErr is set when the pump goroutine returns. It captures the exit
 	// status of the child process. closed is true once the done channel
 	// has been closed exactly once.
@@ -330,6 +335,91 @@ func (s *Session) Resize(rows, cols int) error {
 	}
 	s.notifyWatchers()
 	return nil
+}
+
+// A Sizer is one client's say in the session's size. Clients disagree
+// about the size when their windows do, so only one Sizer, the leader,
+// sets it: the one whose client the user used last. A client claims the
+// lead (Lead) when the user interacts with it, as by typing or focusing
+// its window, and records the size it wants (Want) whenever that changes.
+// The session then has the leader's wanted size, if it wants one.
+type Sizer struct {
+	s          *Session
+	label      string
+	rows, cols int // wanted; zero for no preference
+}
+
+// NewSizer returns a Sizer for a client, described by label (such as
+// "browser") to the other clients.
+func (s *Session) NewSizer(label string) *Sizer {
+	return &Sizer{s: s, label: label}
+}
+
+// Want records the size z's client wants, rows by cols, or no preference
+// if they're zero, and applies it if z leads. With no leader, z takes the
+// lead.
+func (z *Sizer) Want(rows, cols int) error {
+	s := z.s
+	s.sizeMu.Lock()
+	defer s.sizeMu.Unlock()
+	z.rows, z.cols = rows, cols
+	if s.leader == nil {
+		s.leader = z
+		defer s.notifyWatchers()
+	}
+	if s.leader != z {
+		return nil
+	}
+	return z.applyLocked()
+}
+
+// Lead makes z the leader, applying its wanted size.
+func (z *Sizer) Lead() error {
+	s := z.s
+	s.sizeMu.Lock()
+	defer s.sizeMu.Unlock()
+	if s.leader != z {
+		s.leader = z
+		defer s.notifyWatchers() // so others learn they lost the lead
+	}
+	return z.applyLocked()
+}
+
+// applyLocked resizes the session to z's wanted size, if it has one.
+func (z *Sizer) applyLocked() error {
+	if z.rows <= 0 || z.cols <= 0 {
+		return nil
+	}
+	if rows, cols := z.s.Size(); rows == z.rows && cols == z.cols {
+		return nil
+	}
+	return z.s.Resize(z.rows, z.cols)
+}
+
+// Leader reports whether z leads, and otherwise the label of the Sizer
+// that does, if any.
+func (z *Sizer) Leader() (leads bool, other string) {
+	s := z.s
+	s.sizeMu.Lock()
+	defer s.sizeMu.Unlock()
+	if s.leader == z {
+		return true, ""
+	}
+	if s.leader != nil {
+		return false, s.leader.label
+	}
+	return false, ""
+}
+
+// Close gives up z's lead, if it has it, as when its client goes away.
+func (z *Sizer) Close() {
+	s := z.s
+	s.sizeMu.Lock()
+	defer s.sizeMu.Unlock()
+	if s.leader == z {
+		s.leader = nil
+		s.notifyWatchers()
+	}
 }
 
 // Signal delivers sig to the child process.

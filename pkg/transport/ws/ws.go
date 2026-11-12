@@ -6,8 +6,12 @@
 // delivers every frame in order, so no keyframes are needed.
 //
 // A connection opened with ?write=1 may also drive the session, by sending
-// JSON text frames: {"input": "..."} to type, and {"resize": {"rows": R,
-// "cols": C}} to set the terminal size. Other connections are view-only,
+// JSON text frames: {"input": "..."} to type, {"resize": {"rows": R,
+// "cols": C}} to say what size it wants the terminal (0 by 0 for no
+// preference), and {"lead": true} to make that size apply, as when the
+// user focuses its window; typing does too. Only the client the user used
+// last sets the size (see session.Sizer), and the server sends a Sizing
+// frame to say whether that's this one. Other connections are view-only,
 // and their inbound frames are ignored. (Today only the session's owner can
 // connect at all; view-only connections are what links shared with others
 // will get.)
@@ -79,6 +83,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	// connection, and otherwise just so that a browser closing the
 	// connection is noticed promptly.
 	writable := r.URL.Query().Get("write") == "1"
+	sizer := sess.NewSizer("a browser")
+	defer sizer.Close()
 	go func() {
 		defer cancel()
 		for {
@@ -87,7 +93,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if writable && typ == websocket.MessageText {
-				if err := s.handleInput(sess, b); err != nil {
+				if err := s.handleInput(sess, sizer, b); err != nil {
 					s.Logf("ws: input from %s: %v", r.RemoteAddr, err)
 				}
 			}
@@ -101,7 +107,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.Logf("ws: recording attach: %v", err)
 	}
 
-	if err := s.pump(ctx, conn, sess); err != nil && !errors.Is(err, context.Canceled) {
+	if err := s.pump(ctx, conn, sess, sizer, writable); err != nil && !errors.Is(err, context.Canceled) {
 		s.Logf("ws: pump: %v", err)
 	}
 	conn.Close(websocket.StatusNormalClosure, "session ended")
@@ -114,27 +120,36 @@ type inputMsg struct {
 		Rows int `json:"rows"`
 		Cols int `json:"cols"`
 	} `json:"resize,omitzero"`
+	Lead bool `json:"lead,omitzero"`
 }
 
 // maxDim bounds a requested terminal dimension.
 const maxDim = 1000
 
-func (s *Server) handleInput(sess *session.Session, b []byte) error {
+func (s *Server) handleInput(sess *session.Session, sizer *session.Sizer, b []byte) error {
 	var m inputMsg
 	if err := json.Unmarshal(b, &m); err != nil {
 		return err
 	}
-	if m.Input != "" {
-		if _, err := sess.WriteInput([]byte(m.Input)); err != nil {
+	// Record the wanted size before taking the lead, which applies it.
+	if rs := m.Resize; rs != nil {
+		noPref := rs.Rows == 0 && rs.Cols == 0
+		if !noPref && (rs.Rows < 1 || rs.Cols < 1 || rs.Rows > maxDim || rs.Cols > maxDim) {
+			return fmt.Errorf("bad size %dx%d", rs.Cols, rs.Rows)
+		}
+		if err := sizer.Want(rs.Rows, rs.Cols); err != nil {
 			return err
 		}
 	}
-	if rs := m.Resize; rs != nil {
-		if rs.Rows < 1 || rs.Cols < 1 || rs.Rows > maxDim || rs.Cols > maxDim {
-			return fmt.Errorf("bad size %dx%d", rs.Cols, rs.Rows)
+	if m.Lead || m.Input != "" {
+		// Whoever types is who the user is using.
+		if err := sizer.Lead(); err != nil {
+			return err
 		}
-		if rows, cols := sess.Size(); rows != rs.Rows || cols != rs.Cols {
-			return sess.Resize(rs.Rows, rs.Cols)
+	}
+	if m.Input != "" {
+		if _, err := sess.WriteInput([]byte(m.Input)); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -157,11 +172,28 @@ func (s *Server) recheck(ctx context.Context, cancel context.CancelFunc, remoteA
 	}
 }
 
-func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.Session) error {
+func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.Session, sizer *session.Sizer, writable bool) error {
 	w := sess.Watch(ctx)
 	defer func() { <-w.Done() }()
 
 	if err := writeEnv(ctx, conn, proto.Envelope{Snapshot: &proto.Snapshot{S: sess.Snapshot()}}); err != nil {
+		return err
+	}
+	// sendSizing tells a writable viewer about changes in who sets the
+	// size. The watcher ticks when the leader changes.
+	var sizing *proto.Sizing
+	sendSizing := func() error {
+		if !writable {
+			return nil
+		}
+		leads, other := sizer.Leader()
+		if sizing != nil && sizing.Leader == leads && sizing.Other == other {
+			return nil
+		}
+		sizing = &proto.Sizing{Leader: leads, Other: other}
+		return writeEnv(ctx, conn, proto.Envelope{Sizing: sizing})
+	}
+	if err := sendSizing(); err != nil {
 		return err
 	}
 	for {
@@ -173,6 +205,9 @@ func (s *Server) pump(ctx context.Context, conn *websocket.Conn, sess *session.S
 		case _, ok := <-w.Ticks():
 			if !ok {
 				return writeEnv(ctx, conn, proto.Envelope{Ended: &proto.Ended{Status: "closed"}})
+			}
+			if err := sendSizing(); err != nil {
+				return err
 			}
 			d := w.Diff()
 			if d.Changed() {

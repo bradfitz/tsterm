@@ -211,7 +211,8 @@ function connect() {
   sock.onopen = () => {
     if (ws !== sock) return;
     showStatus();
-    if (sizeOwner || fitOnConnect) fit();
+    // Opening a session in the window in front is using it.
+    if (sizeOwner || fitOnConnect) fit(document.hasFocus() || fitOnConnect, !sizeOwner);
     fitOnConnect = false;
   };
   sock.onmessage = (ev) => {
@@ -219,6 +220,7 @@ function connect() {
     const env = decodeCBOR(ev.data);
     if (env[6]) applySnapshot(env[6]["s_"]);
     else if (env[5]) applyDelta(env[5].d);
+    else if (env[11]) { sizing = env[11]; showStatus(); }
     else if (env[7]) { statusEl.textContent = "session ended"; sock.onclose = null; ws = null; }
   };
   sock.onclose = () => {
@@ -229,9 +231,21 @@ function connect() {
   };
 }
 
+// sizing is a proto.Sizing from the server: whether this window sets the
+// session's size (l), and if not, which other client does (o). Of the
+// clients that want a size, the one the user used last sets it.
+let sizing = {};
+
 function showStatus() {
   if (!ws) return;
-  statusEl.textContent = !writable ? "view-only" : sizeOwner ? "live, sizing to window" : "live";
+  statusEl.textContent = !writable ? "view-only"
+    : !sizeOwner ? "live"
+    : sizing.l ? "live, sizing to window"
+    : sizing.o ? `live, sized by ${sizing.o}`
+    : "live";
+  statusEl.title = sizeOwner && !sizing.l && sizing.o
+    ? "The session has the size of the client used last. Focus this window or type into it to size it to this window."
+    : "";
 }
 
 // reconnect reopens the stream, as after switching between view-only and
@@ -541,13 +555,17 @@ function measureCell() {
   return [w, h];
 }
 
-// fit resizes the session to the most columns and rows the terminal area
-// holds.
-function fit() {
+// fit tells the server that this window wants the session to have the
+// most columns and rows the terminal area holds. The size applies if this
+// window leads, the client the user used last; lead says it is now, as on
+// focus. once says to want no size after, as for a one-time fit.
+function fit(lead, once) {
   const [cw, ch] = cellSize();
-  const cols = Math.max(10, Math.floor(areaEl.clientWidth / cw));
-  const rows = Math.max(3, Math.floor(areaEl.clientHeight / ch));
-  if (rows !== numRows || cols !== numCols) send({resize: {rows, cols}});
+  // The area's whole box: once the terminal fits, it has no scrollbars.
+  const cols = Math.max(10, Math.floor(areaEl.offsetWidth / cw));
+  const rows = Math.max(3, Math.floor(areaEl.offsetHeight / ch));
+  send({resize: {rows, cols}, lead: !!lead});
+  if (once) send({resize: {rows: 0, cols: 0}});
 }
 
 const areaEl = document.querySelector("main");
@@ -566,11 +584,13 @@ const autoFitEl = document.getElementById("autofit");
 const fitOnceEl = document.getElementById("fitonce");
 
 // setAutoFit sets the auto-fit preference, for this and the app's other
-// windows (save), or as another window saved it.
+// windows (save, as the user clicked here), or as another window saved it.
 function setAutoFit(on, save) {
   autoFit = on;
   if (save) localStorage.setItem(autoFitKey, on ? "1" : "0");
   setSizeOwner(autoFit && writable);
+  if (sizeOwner) fit(save);
+  else send({resize: {rows: 0, cols: 0}});
 }
 window.addEventListener("storage", (ev) => {
   if (ev.key === autoFitKey) setAutoFit(ev.newValue === "1", false);
@@ -585,7 +605,6 @@ function setSizeOwner(on) {
       : "Auto-fit is off. Click to size sessions to their windows, and keep them so (in all windows).";
   }
   showStatus();
-  if (on) fit();
 }
 for (const b of document.querySelectorAll(".autofit")) {
   b.addEventListener("click", () => setAutoFit(!autoFit, true));
@@ -622,7 +641,7 @@ document.addEventListener("mousemove", (ev) => {
 });
 document.addEventListener("mouseleave", () => showFitBar(false));
 fitOnceEl.addEventListener("click", () => {
-  fit();
+  fit(true, !sizeOwner);
   showFitBar(false);
 });
 
@@ -634,8 +653,11 @@ new ResizeObserver(() => {
   updateCornerHandle();
   if (!sizeOwner) return;
   clearTimeout(fitTimer);
-  fitTimer = setTimeout(fit, 100);
+  // Resizing the window in front is using it.
+  fitTimer = setTimeout(() => fit(document.hasFocus()), 100);
 }).observe(areaEl);
+// So is focusing it.
+window.addEventListener("focus", () => { if (sizeOwner) fit(true); });
 // The terminal changes size too, when the session is resized.
 new ResizeObserver(updateCornerHandle).observe(screenEl);
 
@@ -903,7 +925,7 @@ function switchTo(id, name, push) {
   if (push) history.pushState({id, name}, "", `/s/${encodeURIComponent(id)}${location.search}`);
   document.title = `${name || id} · tsterm`;
   mouseButton = -1;
-  rows = []; cursor = null; modes = {};
+  rows = []; cursor = null; modes = {}; sizing = {};
   screenEl.replaceChildren();
   statusEl.textContent = "connecting…";
   reconnect();
