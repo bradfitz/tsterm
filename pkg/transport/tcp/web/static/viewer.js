@@ -92,8 +92,37 @@ let numRows = 0, numCols = 0, rows = [], cursor = null, modes = {};
 // out-of-bounds pattern shows around it.
 function setSize(r, c) {
   numRows = r; numCols = c;
-  screenEl.style.width = `${c}ch`;
+  screenEl.style.width = histEl.style.width = `${c}ch`;
   screenEl.style.height = `${r * 1.2}em`; // the CSS line-height
+}
+
+// colors returns a vt.Style's foreground and background colors, as CSS
+// colors or undefined for the defaults.
+function colors(st) {
+  let fg = color(st.f), bg = color(st.b);
+  if ((st.a || 0) & REVERSE) { [fg, bg] = [bg || "#000", fg || "#ddd"]; }
+  return [fg, bg];
+}
+
+// attrClasses adds the classes for a vt.Style's attributes to cls.
+function attrClasses(st, cls) {
+  const attrs = st.a || 0;
+  if (attrs & BOLD) cls.push("bold");
+  if (attrs & FAINT) cls.push("faint");
+  if (attrs & ITALIC) cls.push("italic");
+  if (st.u) cls.push("underline");
+  if (attrs & STRIKE) cls.push("strike");
+  if (attrs & CONCEAL) cls.push("conceal");
+  return cls;
+}
+
+// linked returns el, or a link holding it, if href is set.
+function linked(el, href) {
+  if (!href) return el;
+  const a = document.createElement("a");
+  a.href = href; a.target = "_blank"; a.rel = "noopener";
+  a.appendChild(el);
+  return a;
 }
 
 function renderRow(cells, y) {
@@ -103,9 +132,8 @@ function renderRow(cells, y) {
     if (!cell.w) continue; // continuation of a wide character
     const span = document.createElement("span");
     span.textContent = cell.g || " ";
-    const st = cell.s || {}, attrs = st.a || 0;
-    let fg = color(st.f), bg = color(st.b);
-    if (attrs & REVERSE) { [fg, bg] = [bg || "#000", fg || "#ddd"]; }
+    const st = cell.s || {};
+    const [fg, bg] = colors(st);
     const cls = [];
     if (cursor && cursor.v && cursor.r === y && cursor.c === x) {
       // The stylesheet draws the cursor in the cell's colors, inverted
@@ -118,21 +146,9 @@ function renderRow(cells, y) {
       if (fg) span.style.color = fg;
       if (bg) span.style.backgroundColor = bg;
     }
-    if (attrs & BOLD) cls.push("bold");
-    if (attrs & FAINT) cls.push("faint");
-    if (attrs & ITALIC) cls.push("italic");
-    if (st.u) cls.push("underline");
-    if (attrs & STRIKE) cls.push("strike");
-    if (attrs & CONCEAL) cls.push("conceal");
+    attrClasses(st, cls);
     if (cls.length) span.className = cls.join(" ");
-    if (cell.l) {
-      const a = document.createElement("a");
-      a.href = cell.l; a.target = "_blank"; a.rel = "noopener";
-      a.appendChild(span);
-      line.appendChild(a);
-    } else {
-      line.appendChild(span);
-    }
+    line.appendChild(linked(span, cell.l));
   }
   return line;
 }
@@ -156,6 +172,8 @@ function applySnapshot(s) {
   modes = s.m || {};
   if (s.t) document.title = s.t;
   renderAll();
+  showHistory();
+  setHistoryTotal(s.h || 0);
 }
 
 function applyDelta(d) {
@@ -170,7 +188,8 @@ function applyDelta(d) {
     (run.x || []).forEach((cell, i) => { row[run.c + i] = cell; });
     touched.add(run.r);
   }
-  if (d.mc) modes = d.m || {};
+  if (d.mc) { modes = d.m || {}; showHistory(); }
+  if (d.hc) setHistoryTotal(d.h || 0);
   if (d.ns && d.n && (d.n.s || 0) > lastNotification) {
     lastNotification = d.n.s;
     // A full screen, as on connecting, only brings us up to date.
@@ -221,6 +240,7 @@ function connect() {
     if (env[6]) applySnapshot(env[6]["s_"]);
     else if (env[5]) applyDelta(env[5].d);
     else if (env[11]) { sizing = env[11]; showStatus(); }
+    else if (env[12]) applyHistory(env[12]);
     else if (env[7]) { statusEl.textContent = "session ended"; sock.onclose = null; ws = null; }
   };
   sock.onclose = () => {
@@ -259,6 +279,126 @@ function reconnect() {
 
 function send(msg) {
   if (writable && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
+// type sends what the user typed or pasted, and, as typing in a terminal
+// does, scrolls back down to the screen.
+function type(input) {
+  send({input});
+  if (writable) scrollToBottom();
+}
+
+// History: the lines that have scrolled off the top of the screen, which
+// the server keeps, numbered from 0. They show above the screen, and the
+// terminal area scrolls through them, loading older ones as it nears the
+// top. The lines from histFrom up to histTo are loaded; histTotal is how
+// many there are, and histFirst the oldest the server still has.
+const histEl = document.getElementById("history");
+const histChunk = 500; // lines to load at a time
+let histFrom = 0, histTo = 0, histTotal = 0, histFirst = 0;
+let histStarted = false; // whether histFrom and histTo are set
+let histWant = null; // the request in flight: "newer" or "older"
+let pinned = true; // whether the view stays at the bottom
+
+function resetHistory() {
+  histEl.replaceChildren();
+  pinned = true;
+  histFrom = histTo = histTotal = histFirst = 0;
+  histStarted = false;
+  histWant = null;
+}
+
+// showHistory shows the history, but not while the alternate screen,
+// which has none, is up.
+function showHistory() { histEl.hidden = !!modes.a; }
+
+// setHistoryTotal notes how many lines of history there are, and loads
+// the new ones, starting with the newest histChunk.
+function setHistoryTotal(n) {
+  histTotal = n;
+  if (!histStarted) {
+    histStarted = true;
+    histFrom = histTo = Math.max(0, n - histChunk);
+  }
+  loadHistory();
+}
+
+function atBottom() { return areaEl.scrollTop + areaEl.clientHeight >= areaEl.scrollHeight - 2; }
+function scrollToBottom() {
+  areaEl.scrollTop = areaEl.scrollHeight;
+  pinned = true;
+}
+function nearTop() { return areaEl.scrollTop < 2 * areaEl.clientHeight; }
+
+// loadHistory asks for the next lines of history needed: new ones, or,
+// near the top, older ones.
+function loadHistory() {
+  if (histWant || !ws || ws.readyState !== WebSocket.OPEN) return;
+  let from, to;
+  if (histTo < histTotal) {
+    histWant = "newer";
+    [from, to] = [histTo, Math.min(histTotal, histTo + 2000)];
+  } else if (histFrom > histFirst && nearTop() && !modes.a) {
+    histWant = "older";
+    [from, to] = [Math.max(histFirst, histFrom - histChunk), histFrom];
+  } else {
+    return;
+  }
+  ws.send(JSON.stringify({history: {from, count: to - from}}));
+}
+
+// applyHistory adds lines of history from the server, a proto.History.
+function applyHistory(h) {
+  const want = histWant;
+  histWant = null;
+  histFirst = h.o || 0;
+  const from = h.f || 0, lines = (h.x || []).map(renderHistoryLine);
+  if (want === "newer") {
+    const follow = pinned || histFrom === histTo; // or the first lines
+    if (from > histTo) {
+      // The server no longer has the lines asked for: start over.
+      histEl.replaceChildren();
+      histFrom = from;
+    }
+    histEl.append(...lines);
+    histTo = from + lines.length;
+    if (follow) scrollToBottom();
+  } else if (want === "older") {
+    // Keep what's in view in place.
+    const height = areaEl.scrollHeight;
+    histEl.prepend(...lines);
+    histFrom = lines.length ? from : histFirst;
+    areaEl.scrollTop += areaEl.scrollHeight - height;
+  }
+  loadHistory();
+}
+
+const utf8 = new TextEncoder(), fromUTF8 = new TextDecoder();
+
+// renderHistoryLine renders a vt.Line: its text (t), styled in runs (r),
+// each a byte length (n), vt.Style (s), and hyperlink (l).
+function renderHistoryLine(l) {
+  const div = document.createElement("div");
+  const text = l.t || "";
+  if (!l.r) {
+    div.textContent = text;
+    return div;
+  }
+  const bytes = utf8.encode(text);
+  let off = 0;
+  for (const r of l.r) {
+    const span = document.createElement("span");
+    span.textContent = fromUTF8.decode(bytes.subarray(off, off + (r.n || 0)));
+    off += r.n || 0;
+    const st = r.s || {};
+    const [fg, bg] = colors(st);
+    if (fg) span.style.color = fg;
+    if (bg) span.style.backgroundColor = bg;
+    const cls = attrClasses(st, []);
+    if (cls.length) span.className = cls.join(" ");
+    div.appendChild(linked(span, r.l));
+  }
+  return div;
 }
 
 connect();
@@ -354,7 +494,7 @@ function typeText(text) {
     clearSticky();
     text = b + rest.join("");
   }
-  send({input: text});
+  type(text);
 }
 
 document.addEventListener("keydown", (ev) => {
@@ -371,7 +511,7 @@ document.addEventListener("keydown", (ev) => {
   if (b == null) return;
   ev.preventDefault();
   clearSticky();
-  send({input: b});
+  type(b);
 });
 
 // Composition (IMEs, and mobile keyboards' autocorrect) edits text in
@@ -384,7 +524,7 @@ function sendComposition(text) {
   while (common < composed.length && common < next.length && composed[common] === next[common]) common++;
   const out = "\x7f".repeat(composed.length - common) + next.slice(common).join("");
   composed = next;
-  if (out) send({input: out});
+  if (out) type(out);
 }
 kbdEl.addEventListener("compositionstart", () => { composed = []; });
 kbdEl.addEventListener("compositionend", (ev) => {
@@ -409,13 +549,13 @@ kbdEl.addEventListener("input", (ev) => {
       break;
     case "insertLineBreak":
     case "insertParagraph":
-      send({input: "\r"});
+      type("\r");
       break;
     case "deleteContentBackward":
-      send({input: "\x7f"});
+      type("\x7f");
       break;
     case "deleteWordBackward":
-      send({input: "\x17"}); // Ctrl-W
+      type("\x17"); // Ctrl-W
       break;
   }
   resetField();
@@ -440,7 +580,7 @@ document.addEventListener("paste", (ev) => {
   ev.preventDefault();
   text = text.replace(/\r?\n/g, "\r"); // Enter, as typed
   if (modes.p) text = "\x1b[200~" + text + "\x1b[201~"; // bracketed paste
-  send({input: text});
+  type(text);
 });
 
 // Mouse reports, for programs that asked for them (modes.m is a
@@ -576,8 +716,9 @@ const fitBarEl = document.getElementById("fitbar");
 // checkerboard has room for it: two columns to the right and a row below.
 function updateCornerHandle() {
   const [cw, ch] = cellSize();
-  const room = areaEl.clientWidth - screenEl.offsetWidth >= 2 * cw &&
-    areaEl.clientHeight - screenEl.offsetHeight >= ch;
+  const termEl = screenEl.parentElement; // with the history above
+  const room = areaEl.clientWidth - termEl.offsetWidth >= 2 * cw &&
+    areaEl.clientHeight - termEl.offsetHeight >= ch;
   cornerEl.hidden = !writable || !room;
 }
 const autoFitEl = document.getElementById("autofit");
@@ -616,8 +757,10 @@ setSizeOwner(sizeOwner);
 // big to see whole, a one-time fit that leaves auto-fit off.
 const fitZone = 80; // pixels from the corner
 
+// overflowing reports whether the screen is too big to see whole. (The
+// history above it often is, but that's for scrolling.)
 function overflowing() {
-  return areaEl.scrollWidth > areaEl.clientWidth || areaEl.scrollHeight > areaEl.clientHeight;
+  return screenEl.offsetWidth > areaEl.clientWidth || screenEl.offsetHeight > areaEl.clientHeight;
 }
 
 function showFitBar(show) {
@@ -651,6 +794,7 @@ fitOnceEl.addEventListener("click", () => {
 let fitTimer;
 new ResizeObserver(() => {
   updateCornerHandle();
+  if (pinned) scrollToBottom();
   if (!sizeOwner) return;
   clearTimeout(fitTimer);
   // Resizing the window in front is using it.
@@ -659,7 +803,18 @@ new ResizeObserver(() => {
 // So is focusing it.
 window.addEventListener("focus", () => { if (sizeOwner) fit(true); });
 // The terminal changes size too, when the session is resized.
-new ResizeObserver(updateCornerHandle).observe(screenEl);
+new ResizeObserver(() => {
+  updateCornerHandle();
+  if (pinned) scrollToBottom();
+}).observe(screenEl);
+
+// Scrolling near the top of the history loads older lines. Scrolling to
+// the bottom pins the view there, as the screen changes size and as new
+// lines arrive.
+areaEl.addEventListener("scroll", () => {
+  pinned = atBottom();
+  loadHistory();
+});
 
 // The view-only switch.
 const modeEl = document.getElementById("mode");
@@ -710,7 +865,7 @@ for (const b of document.querySelectorAll("#extrakeys button")) {
     if (!spec) return;
     const bytes = keyBytes({...spec, ctrlKey: stickyCtrl, altKey: stickyAlt});
     clearSticky();
-    if (bytes != null) send({input: bytes});
+    if (bytes != null) type(bytes);
   });
 }
 
@@ -927,6 +1082,7 @@ function switchTo(id, name, push) {
   mouseButton = -1;
   rows = []; cursor = null; modes = {}; sizing = {};
   screenEl.replaceChildren();
+  resetHistory();
   statusEl.textContent = "connecting…";
   reconnect();
   refreshTabs();

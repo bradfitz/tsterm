@@ -44,6 +44,11 @@ main.oob {
 }
 .term { position: relative; display: inline-block; vertical-align: top; }
 
+/* History: the lines that scrolled off the top of the screen, above it,
+   wrapped at its width. */
+#history { background: #000; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
+#history > div { min-height: 1.2em; }
+
 /* The auto-fit handle just past the terminal's bottom-right corner, out in
    the checkerboard, when there's room for it there. */
 #cornerhandle {

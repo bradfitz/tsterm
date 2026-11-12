@@ -123,53 +123,55 @@ run with wazero, so no cgo. It replaced charmbracelet/x/vt on 2026-11-11.
   coalesce to the last. The demo's `N` key notifies after 5 seconds, to try
   the unfocused path. The viewer's bell beeps (Web Audio, unlocked by the
   first key press or click) and flashes the screen.
+- **History.** Lines that scroll off the primary screen go to disk, in
+  `pkg/history`: zstd-compressed CBOR frames of text-plus-style-run lines
+  in ~4 MB segment files under `-sessions-dir`
+  (`~/.local/state/tsterm/sessions/<id>/history`), 256 MB per session by
+  default, oldest segments dropped first. The glue tracks the first row not
+  yet archived with a tracked grid ref (it follows scrolling, pruning, and
+  reflow) and formats new lines with libghostty's formatter (VT text,
+  unwrapped), which Go parses into `vt.Line`s; checkpoints carry the mark
+  and the stored line count, so a restart's replay doesn't duplicate lines.
+  Screens carry the line count (`h`); WebSocket viewers ask for ranges
+  (`{"history": {"from", "count"}}`). The web viewer shows history above the
+  screen, loads older lines near the top, stays pinned to the bottom, and
+  hides it on the alternate screen. Cost: writes of `cat`-like output drop
+  from ~260 to ~55 MB/s, mixed output from ~144 to ~100 MB/s (formatting
+  plus parsing; per-cell glue calls were far slower).
 - **Performance.** Writes: 132 MB/s (charm: 15). Snapshot of 200×60:
   1.4 ms (charm: 0.7); fix by snapshotting only dirty rows (the render state
   tracks them). Each terminal: ~2 MB of wasm memory at start (1 MB is the
   stack, which could shrink), growing with scrollback (16 MB cap; libghostty
   can compress history); wasm memory never shrinks. Module compile: ~0.3 s
   at startup (wazero can cache to disk).
-- **Next.** Dirty-row snapshots; expose scrollback to clients (see
-  "History and frozen sessions" below); set default
+- **Next.** Dirty-row snapshots; set default
   colors from the client's theme (`SetColors` in `pkg/vt/ghostty.go`); pin a
   stable libghostty release artifact rather than building from the tag;
   checkpoints carry the whole scrollback every 256 KB or 5s of output, and
   the shim protocol sends them as base64 JSON, so a binary frame for the
   blob may be worth it.
 
-**To do:** push tsterm-prebuilt's commits (through 0b42044), then run
+**To do:** push tsterm-prebuilt's commits (through cd831cb, ABI 3), then run
 `go get github.com/bradfitz/tsterm-prebuilt/ghosttyvt@main` and remove the
 `replace` directive from go.mod.
 
 ## Upcoming work
 
-- **History and frozen sessions** (direction as of 2026-11-12; GUI
-  clients are the priority, with CLI scrollback deferred to later
-  screen/tmux-style meta keys). Goal: up to a few hundred MB of history
-  per session, on disk, searchable and renderable on the web, surviving a
-  reboot; after a reboot, sessions stay browseable from tstermd, frozen
-  and read-only. Sketch:
-  - Store rendered *logical* lines (soft wraps joined, so resizes don't
-    renumber and clients wrap to their own width) as they leave the
-    screen: text plus style runs, in an append-only, zstd-chunked log
-    with a line-number index, under `$XDG_STATE_HOME/tsterm/<id>/`
-    (0700; not `$XDG_RUNTIME_DIR`, which a reboot clears). tstermd writes
-    it; the next line number rides in the checkpoint. libghostty's
-    in-memory scrollback can then shrink, and checkpoints with it.
-  - First check: whether libghostty-vt's C API lets the glue read rows
-    entering history (or history rows by position); `tsterm_snapshot`
-    reads only the active screen today.
-  - Protocol: a scroll op in screen diffs (scrolling output now resends
-    every row), absolute line numbers, and history-range requests, which
-    GUI clients will want too.
-  - Frozen sessions: tstermd also saves the last screen (rendered) and
-    metadata (name, command, times, end reason) to the session's
-    directory; on startup, directories without a live shim list as ended
-    ("reboot" or the exit status), viewable read-only with their history.
-    Possibly keep normally exited sessions too. Retention: a total disk
-    cap, oldest first, plus delete. Later maybe "restart" in the same
-    directory (needs OSC 7).
-  - Search: decompress and scan at first; an index later.
+- **Frozen sessions** (next; history, below in Status, is done). After a
+  reboot, or when a session's program exits, the session stays listed and
+  browseable, read-only, with its history. Sketch: tstermd saves the last
+  screen (rendered) and metadata (name, command, times, end reason) to
+  the session's directory under `-sessions-dir`; on startup, directories
+  without a live shim list as ended ("reboot" or the exit status).
+  Retention: a total disk cap, oldest first, plus delete in the UI and
+  API. Later maybe "restart" in the same directory (needs OSC 7, which
+  libghostty tracks).
+- **History, more.** Search in the web UI (`history.Store.Search` scans;
+  an index later); virtualize the web viewer's history (it keeps every
+  line it has loaded in the DOM); a scroll op in screen diffs (scrolling
+  output resends every row, over UDP too); shrink libghostty's in-memory
+  scrollback, and so checkpoints, now that history is on disk; history
+  for GUI clients over UDP (a request/response like the WebSocket's).
 - **GUI clients**: iOS, Android, macOS, Linux, later Windows. Plan: extract
   a Go client core from `cmd/tsterm` into `pkg/client` (UDP state sync,
   reassembly, reconnect, input sequencing, key encoding), built with gomobile
