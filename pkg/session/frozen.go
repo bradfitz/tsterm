@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bradfitz/tsterm/pkg/history"
+	"github.com/bradfitz/tsterm/pkg/proto"
 )
 
 // A Frozen session is one that has ended, kept so that it can still be
@@ -42,7 +43,7 @@ type Frozen struct {
 
 // StatusLost is the Status of a session that ended without tstermd seeing
 // it end: tstermd, its shim, or the system went away.
-const StatusLost = "lost"
+const StatusLost = proto.StatusLost
 
 // Screen returns the session's last screen.
 func (f *Frozen) Screen() (SavedScreen, error) { return LoadScreen(f.dir) }

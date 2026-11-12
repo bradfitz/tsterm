@@ -168,6 +168,10 @@ type History struct {
 	Lines []vt.Line `cbor:"x,omitempty"`
 }
 
+// StatusLost is the status of a session that ended without tstermd seeing
+// it end: tstermd, its shim, or the system went away (see session.Frozen).
+const StatusLost = "lost"
+
 // EndedNoSession is the Ended Status the UDP server sends in reply to a
 // Hello for a session that does not exist, such as after a daemon restart.
 const EndedNoSession = "no such session"
