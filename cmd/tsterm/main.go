@@ -8,7 +8,8 @@
 //	tsterm -kill HOST IDORNAME  kill a session
 //
 // While attached, Ctrl-^ (which many terminals also send for Ctrl-~)
-// followed by "." disconnects, leaving the session running. Ctrl-^ twice
+// followed by "." disconnects, leaving the session running; followed by "
+// opens tstermd's session menu, to switch to another session. Ctrl-^ twice
 // sends a literal Ctrl-^.
 //
 // HOST may include :port; default control port is 2200. The client uses the
@@ -149,7 +150,8 @@ func usage() {
   tsterm -kill HOST IDORNAME  kill a session
 
 While attached, type Ctrl-^ (or Ctrl-~) then "." to disconnect, leaving
-the session running.
+the session running, or then " to switch to another session, from a menu.
+Ctrl-^ twice types a Ctrl-^.
 
 flags:`)
 	flag.PrintDefaults()

@@ -101,6 +101,10 @@ type meta struct {
 type Client struct {
 	Addr  string `json:"addr"`  // UDP address, as from netip.AddrPort.String
 	Nonce []byte `json:"nonce"` // the client's Hello nonce
+
+	// Switched is set if the client switched to this session, with the
+	// session menu, from the one its Hellos name.
+	Switched bool `json:"switched,omitzero"`
 }
 
 // Checkpoint policy. The shim keeps all output since the last checkpoint,

@@ -635,3 +635,103 @@ func TestClientDroppedWhenAddressReassigned(t *testing.T) {
 		t.Errorf("deauthorized client still recorded: %v", sess.Clients())
 	}
 }
+
+// screenHas waits up to d for sess's screen to show want.
+func screenHas(sess *session.Session, want string, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		for _, row := range sess.Snapshot().Cells {
+			var line strings.Builder
+			for _, c := range row {
+				line.WriteString(c.Grapheme)
+			}
+			if strings.Contains(line.String(), want) {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestSessionMenu checks that Ctrl-^ " opens the session menu over the
+// client's screen, that choosing a session switches the client to it, and
+// that the client is told so, again on naming its first session.
+func TestSessionMenu(t *testing.T) {
+	srv, pc := startServer(t)
+	mk := func(name string) *session.Session {
+		s, err := srv.Manager.Create(session.Config{Name: name, PTY: pty.Config{Command: "/bin/cat"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	one, two := mk("one"), mk("two")
+	c := dial(t, pc, one)
+	c.hello(0)
+	c.syncState(2*time.Second, anyState)
+
+	seq := uint64(0)
+	typ := func(keys string) {
+		t.Helper()
+		seq++
+		c.send(proto.Envelope{Input: &proto.Input{Seq: seq, Keys: []byte(keys)}})
+	}
+	typ("a\x1e")
+	typ("\"")
+	c.syncState(5*time.Second, func(d vt.ScreenDelta) bool {
+		s := rowText(d)
+		return strings.Contains(s, "Sessions") && strings.Contains(s, "two")
+	})
+	if !screenHas(one, "a", time.Second) {
+		t.Error("the keys before Ctrl-^ \" didn't reach the session")
+	}
+
+	// The other session, two, is selected; choose it.
+	typ("\r")
+	v := c.recvUntil(5*time.Second, func(e proto.Envelope) bool { return e.Viewing != nil })
+	if v.Viewing.SessionID != string(two.ID()) || v.Viewing.Name != "two" || !bytes.Equal(v.Viewing.Token, two.Token()) {
+		t.Fatalf("Viewing = %+v, want two", v.Viewing)
+	}
+	typ("hello\n")
+	if !screenHas(two, "hello", 3*time.Second) {
+		t.Fatal("input after switching didn't reach the new session")
+	}
+	if screenHas(one, "hello", 0) {
+		t.Error("input after switching reached the old session")
+	}
+
+	// A Hello naming the first session, as from a client that missed
+	// the Viewing, is told again, and stays.
+	c.hello(seq)
+	v = c.recvUntil(3*time.Second, func(e proto.Envelope) bool { return e.Viewing != nil })
+	if v.Viewing.SessionID != string(two.ID()) {
+		t.Errorf("Viewing after Hello = %+v", v.Viewing)
+	}
+	recs := two.Clients()
+	if len(recs) != 1 || !recs[0].Switched || len(one.Clients()) != 0 {
+		t.Errorf("client records: one %+v, two %+v", one.Clients(), recs)
+	}
+}
+
+func TestSessionMenuEscapes(t *testing.T) {
+	c := &client{}
+	for _, tt := range []struct {
+		in, out string
+		open    bool
+		rest    string
+	}{
+		{"abc", "abc", false, ""},
+		{"a\x1e\"bc", "a", true, "bc"},
+		{"\x1e\x1e", "\x1e", false, ""},
+		{"\x1ex", "\x1ex", false, ""},
+	} {
+		c.escaped = false
+		out, open, rest := c.escape([]byte(tt.in))
+		if string(out) != tt.out || open != tt.open || string(rest) != tt.rest {
+			t.Errorf("escape(%q) = %q, %v, %q", tt.in, out, open, rest)
+		}
+	}
+}

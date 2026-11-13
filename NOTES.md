@@ -80,6 +80,34 @@ Working, and deployed on braid as a systemd user unit (`tstermd`):
 - **CLI client** (`cmd/tsterm`): attach, list, create, kill; status line when
   the server is unreachable; Ctrl-^ . disconnects; mirrors mouse, bracketed
   paste, cursor-key, and focus modes onto the local terminal.
+- **Session menu** (Ctrl-^ ", like Screen's C-a "; `pkg/switcher`, and the
+  UDP server's per-client handling): tstermd, not the client, sees the
+  prefix in a UDP client's input (Ctrl-^ Ctrl-^ types one Ctrl-^; the CLI
+  now passes both through, keeping only Ctrl-^ . for itself) and draws a
+  menu of the running sessions over that client's screen: the session,
+  dimmed (SGR faint, RGB colors halved) and still live, with a box
+  centered on top, sized to the list. The box is a Bubble Tea v2 program
+  (bubbles' list) run headless: its output goes into a private libghostty
+  instance the box's size, whose replies to its queries go back to its
+  input, and the server composites that instance's screen over the
+  session's each frame, sent through the usual state sync. Keys go to the
+  menu while it's open: arrows, Enter to switch, / to search (fuzzy, over
+  names, commands, and IDs), m to cycle the sort (recent activity, name,
+  newest), Esc or q to close. It opens with the most recently active
+  other session selected, for Alt-Tab-style toggling. Switching rebinds
+  the client (its input stream continues; it gets a new Sizer, which
+  leads, and watcher) and moves its persisted client record, marked
+  `Switched`; the server tells it with a `proto.Viewing` (ID, name,
+  token), sent on switching and again in reply to any Hello naming
+  another session, and the client Hellos with that session from then on,
+  and names it in the "reattach with" hint. A Hello whose nonce the server
+  knows keeps its client whatever session it names, and a forgotten
+  client whose nonce has a `Switched` record (as after a restart) returns
+  to that session. Each client's menu is its own: other watchers, and the
+  session's size, are unaffected. Web and Fyne don't use it; they could
+  later catch the same keys and show native menus. If the session ends
+  while the menu is open, the client stays, to pick another, and gets
+  Ended only if it doesn't.
 - **Web UI** (`http://HOST:2200/`, owner only): session list (names first,
   linking to the sessions, unnamed ones as their IDs' dim starts, with a
   pencil to rename on hovering over a row) with renaming

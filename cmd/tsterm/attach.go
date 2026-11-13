@@ -132,6 +132,7 @@ func attach(ctx context.Context, ctrl *control, info proto.SessionInfo) error {
 	}()
 
 	wg.Wait()
+	info = state.viewing()
 	if errors.Is(state.exitErr, errDisconnected) {
 		which := info.ID
 		if info.Name != "" {
@@ -237,6 +238,11 @@ func (s *attachState) handle(env proto.Envelope) {
 		s.handleStateLocked(env.State)
 	case env.Ack != nil:
 		s.handleAckLocked(env.Ack.Highest)
+	case env.Viewing != nil:
+		// The user switched sessions, with tstermd's session menu.
+		// Attach to that one from now on.
+		v := env.Viewing
+		s.info.ID, s.info.Name, s.info.Token = v.SessionID, v.Name, v.Token
 	case env.Ended != nil:
 		var err error
 		if env.Ended.Status == proto.EndedNoSession {
@@ -244,6 +250,13 @@ func (s *attachState) handle(env proto.Envelope) {
 		}
 		s.exitLocked(err)
 	}
+}
+
+// viewing returns the session the client is looking at.
+func (s *attachState) viewing() proto.SessionInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.info
 }
 
 // onContactLocked records that the server answered.

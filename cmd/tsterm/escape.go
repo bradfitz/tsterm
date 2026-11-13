@@ -4,9 +4,10 @@ package main
 // terminals also send for Ctrl-~. After it:
 //
 //	.        disconnect, leaving the session running
-//	Ctrl-^   send a literal Ctrl-^
 //
-// Any other key sends Ctrl-^ followed by that key.
+// Any other key sends Ctrl-^ followed by that key, for tstermd, which has
+// commands of its own after Ctrl-^ (see package udp): " opens the session
+// menu, and Ctrl-^ types a literal Ctrl-^.
 const escapeByte = 0x1e
 
 // escaper scans typed input for client commands. The zero value is ready.
@@ -30,8 +31,6 @@ func (e *escaper) filter(in []byte) (out []byte, disconnect bool) {
 		switch b {
 		case '.':
 			return out, true
-		case escapeByte:
-			out = append(out, escapeByte)
 		default:
 			out = append(out, escapeByte, b)
 		}

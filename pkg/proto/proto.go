@@ -41,6 +41,7 @@ type Envelope struct {
 	Detach   *Detach   `cbor:"10,keyasint,omitempty"`
 	Sizing   *Sizing   `cbor:"11,keyasint,omitempty"`
 	History  *History  `cbor:"12,keyasint,omitempty"`
+	Viewing  *Viewing  `cbor:"13,keyasint,omitempty"`
 }
 
 // Hello is the first packet a client sends on UDP attach. The server uses
@@ -50,7 +51,10 @@ type Envelope struct {
 // Clients resend Hello whenever they stop hearing from the server, so it
 // must be idempotent. Nonce identifies one client process: a Hello whose
 // source address and Nonce match an existing attachment refreshes that
-// attachment instead of replacing it. When the server has forgotten the
+// attachment instead of replacing it, whatever session it names, since the
+// client may have switched sessions (see Viewing). The server also keeps
+// which session each Nonce is looking at, so a client it has forgotten,
+// or that a restarted tstermd hasn't met, returns to it. When the server has forgotten the
 // client (for example, after an idle timeout), InputAcked tells it which
 // input Seq the client last saw acknowledged, so the client's input stream
 // resumes where it left off instead of restarting at 1.
@@ -61,6 +65,18 @@ type Hello struct {
 	Cols       int    `cbor:"c,omitempty"`
 	Nonce      []byte `cbor:"n,omitempty"`
 	InputAcked uint64 `cbor:"ia,omitempty"`
+}
+
+// Viewing tells a UDP client which session it's looking at, when that's
+// not the one it attached to: the user switched sessions with tstermd's
+// session menu, which the client knows nothing about. The client attaches
+// to this one from now on, such as in its Hellos, and in what it tells the
+// user to reattach to. The server sends it on switching, and again in
+// reply to a Hello naming another session, in case it was lost.
+type Viewing struct {
+	SessionID string `cbor:"id"`
+	Name      string `cbor:"name,omitempty"`
+	Token     []byte `cbor:"tok"`
 }
 
 // Input is a batched client-to-server keystroke event. Seq is monotonically

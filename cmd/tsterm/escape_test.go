@@ -12,7 +12,8 @@ func TestEscaper(t *testing.T) {
 		{"plain", []string{"hello"}, "hello", false},
 		{"disconnect", []string{"ls\r\x1e."}, "ls\r", true},
 		{"split across reads", []string{"ab\x1e", ".cd"}, "ab", true},
-		{"literal escape", []string{"\x1e\x1e"}, "\x1e", false},
+		{"literal escape, for the server", []string{"\x1e\x1e"}, "\x1e\x1e", false},
+		{"session menu, for the server", []string{"\x1e\""}, "\x1e\"", false},
 		{"other key passes through", []string{"\x1ex"}, "\x1ex", false},
 		{"pending at end", []string{"a\x1e"}, "a", false},
 	}

@@ -23,6 +23,13 @@
 // The server forgets clients that send nothing for IdleTimeout. Forgetting a
 // client stops only its updates; the session and its PTY keep running, and
 // the client reattaches by sending another Hello.
+//
+// A client's user may type Ctrl-^ " (menuKey after escapeByte) to open the
+// session menu (see package switcher), which the server draws over the
+// session's screen, and to which their keys go while it's open, and
+// through which they may switch the client to another session. The client
+// knows nothing of it, except to be told which session it's looking at
+// (proto.Viewing).
 package udp
 
 import (
@@ -34,6 +41,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +49,7 @@ import (
 	"github.com/bradfitz/tsterm/pkg/auth"
 	"github.com/bradfitz/tsterm/pkg/proto"
 	"github.com/bradfitz/tsterm/pkg/session"
+	"github.com/bradfitz/tsterm/pkg/switcher"
 	"github.com/bradfitz/tsterm/pkg/vt"
 )
 
@@ -205,7 +214,7 @@ func (m *mux) reaper() {
 		}
 		m.mu.Unlock()
 		for _, c := range reaped {
-			m.forget(c.sess, c.addr)
+			m.forget(c.session(), c.addr)
 		}
 	}
 }
@@ -215,47 +224,51 @@ func (m *mux) attach(addr netip.AddrPort, h *proto.Hello) {
 		m.srv.Logf("udp: attach from %v: %v", addr, err)
 		return
 	}
-	sess, err := m.srv.Manager.Resolve(h.SessionID)
-	if err != nil {
-		// The peer is authorized, so it is safe to tell it the session is
-		// gone. This is what a client sees after the daemon restarts.
-		m.srv.Logf("udp: attach from %v: %v", addr, err)
-		m.sendTo(addr, proto.Envelope{Ended: &proto.Ended{Status: proto.EndedNoSession}})
+	m.mu.Lock()
+	if prev, ok := m.clients[addr]; ok && len(h.Nonce) > 0 && bytes.Equal(prev.nonce, h.Nonce) {
+		// A repeated Hello from a client we still know, such as one
+		// waking from sleep, whatever session it names, since its
+		// user may have switched it to another. Keep its state; it
+		// updates its size, which applies if it still leads, but
+		// waking up isn't using it, so it doesn't take the lead back.
+		m.mu.Unlock()
+		prev.deliver(proto.Envelope{Hello: h})
 		return
 	}
-	if !bytes.Equal(sess.Token(), h.Token) {
-		m.srv.Logf("udp: attach from %v: bad token", addr)
-		return
+	m.mu.Unlock()
+
+	// A client we've forgotten, but that switched sessions, returns to
+	// the one it switched to. Its Nonce, a secret it shares only with
+	// us, is enough to show it's the same client.
+	sess := m.switchedTo(h.Nonce)
+	if sess == nil {
+		var err error
+		sess, err = m.srv.Manager.Resolve(h.SessionID)
+		if err != nil {
+			// The peer is authorized, so it is safe to tell it the
+			// session is gone. This is what a client sees after the
+			// daemon restarts.
+			m.srv.Logf("udp: attach from %v: %v", addr, err)
+			m.sendTo(addr, proto.Envelope{Ended: &proto.Ended{Status: proto.EndedNoSession}})
+			return
+		}
+		if !bytes.Equal(sess.Token(), h.Token) {
+			m.srv.Logf("udp: attach from %v: bad token", addr)
+			return
+		}
 	}
 	m.mu.Lock()
 	if prev, ok := m.clients[addr]; ok {
-		if prev.sess == sess && len(h.Nonce) > 0 && bytes.Equal(prev.nonce, h.Nonce) {
-			// A repeated Hello from a client we still know, such as
-			// one waking from sleep. Keep its state. Its size applies
-			// if it still leads, but waking up isn't using it, so it
-			// doesn't take the lead back.
-			m.mu.Unlock()
-			if h.Rows > 0 && h.Cols > 0 {
-				if err := prev.sizer.Want(h.Rows, h.Cols); err != nil {
-					m.srv.Logf("udp: attach resize: %v", err)
-				}
-			}
-			prev.deliver(proto.Envelope{Hello: h})
-			return
-		}
 		prev.stop()
 		delete(m.clients, addr)
 	}
-	c := m.addClientLocked(addr, sess, h.Nonce, h.InputAcked)
-	m.mu.Unlock()
 	// Attaching is using the client, so its size applies.
-	if h.Rows > 0 && h.Cols > 0 {
-		c.sizer.Want(h.Rows, h.Cols)
-		if err := c.sizer.Lead(); err != nil {
-			m.srv.Logf("udp: attach resize: %v", err)
-		}
+	c := m.addClientLocked(addr, sess, h.Nonce, h.InputAcked, h.Rows, h.Cols, true)
+	m.mu.Unlock()
+	if !c.names(h.SessionID) {
+		m.sendTo(addr, viewing(sess))
 	}
-	m.remember(sess, addr, h.Nonce)
+	m.remember(sess, addr, h.Nonce, !c.names(h.SessionID))
 	// Attaching is wanting to see it: it's open again, if it was closed.
 	if err := m.srv.Manager.SetClosed(string(sess.ID()), false); err != nil {
 		m.srv.Logf("udp: reopening %s: %v", sess.ID(), err)
@@ -265,14 +278,15 @@ func (m *mux) attach(addr netip.AddrPort, h *proto.Hello) {
 	}
 }
 
-// addClientLocked registers a client and starts its goroutine, which
-// begins by sending the client the whole screen.
-func (m *mux) addClientLocked(addr netip.AddrPort, sess *session.Session, nonce []byte, inputAcked uint64) *client {
+// addClientLocked registers a client, whose screen is rows by cols (or
+// unknown, if zero), and, if lead, which the user is using, so its size
+// applies; and starts its goroutine, which begins by sending the client
+// the whole screen.
+func (m *mux) addClientLocked(addr netip.AddrPort, sess *session.Session, nonce []byte, inputAcked uint64, rows, cols int, lead bool) *client {
 	ctx, cancel := context.WithCancel(m.ctx)
 	c := &client{
 		mux:      m,
 		addr:     addr,
-		sess:     sess,
 		nonce:    bytes.Clone(nonce),
 		ctx:      ctx,
 		cancel:   cancel,
@@ -280,23 +294,55 @@ func (m *mux) addClientLocked(addr netip.AddrPort, sess *session.Session, nonce 
 		seen:     time.Now(),
 		ackedSeq: inputAcked,
 		dirty:    true,
-		sizer:    sess.NewSizer("tsterm"),
+		rows:     rows,
+		cols:     cols,
 	}
-	c.watcher = sess.Watch(ctx)
+	c.watch(sess)
+	if lead && rows > 0 && cols > 0 {
+		if err := c.sizer.Lead(); err != nil {
+			m.srv.Logf("udp: attach resize: %v", err)
+		}
+	}
 	m.clients[addr] = c
 	go c.run()
 	return c
+}
+
+// switchedTo returns the session that the client with nonce switched to,
+// if it did, and it's still running.
+func (m *mux) switchedTo(nonce []byte) *session.Session {
+	if len(nonce) == 0 {
+		return nil
+	}
+	for _, sess := range m.srv.Manager.Sessions() {
+		for _, r := range sess.Clients() {
+			if r.Switched && bytes.Equal(r.Nonce, nonce) {
+				return sess
+			}
+		}
+	}
+	return nil
+}
+
+// viewing returns the Viewing frame for sess.
+func viewing(sess *session.Session) proto.Envelope {
+	return proto.Envelope{Viewing: &proto.Viewing{
+		SessionID: string(sess.ID()),
+		Name:      sess.Name(),
+		Token:     sess.Token(),
+	}}
 }
 
 // maxRemembered bounds the clients recorded per session.
 const maxRemembered = 8
 
 // remember records the client at addr in sess, where it survives a tstermd
-// restart; see resume.
-func (m *mux) remember(sess *session.Session, addr netip.AddrPort, nonce []byte) {
+// restart; see resume. switched says it switched to sess, from the one it
+// attached to; see switchedTo.
+func (m *mux) remember(sess *session.Session, addr netip.AddrPort, nonce []byte, switched bool) {
 	err := sess.UpdateClients(func(recs []session.Client) []session.Client {
 		recs = slices.DeleteFunc(recs, func(r session.Client) bool { return r.Addr == addr.String() })
-		recs = append(recs, session.Client{Addr: addr.String(), Nonce: bytes.Clone(nonce)})
+		recs = append(recs, session.Client{Addr: addr.String(), Nonce: bytes.Clone(nonce), Switched: switched})
 		return recs[max(len(recs)-maxRemembered, 0):]
 	})
 	if err != nil {
@@ -322,7 +368,7 @@ func (m *mux) drop(c *client) {
 	}
 	m.mu.Unlock()
 	c.stop()
-	m.forget(c.sess, c.addr)
+	m.forget(c.session(), c.addr)
 }
 
 // recheck drops attached clients that stop being authorized, as when their
@@ -384,7 +430,7 @@ func (m *mux) resume() {
 					// The input stream's position is unknown, so start
 					// at 0. The client's next Input carries a Floor,
 					// which lets the server skip ahead to it.
-					m.addClientLocked(addr, sess, r.Nonce, 0)
+					m.addClientLocked(addr, sess, r.Nonce, 0, 0, 0, false)
 				}
 			}()
 		}
@@ -412,15 +458,25 @@ func (m *mux) sendTo(addr netip.AddrPort, env proto.Envelope) {
 // client is the per-source-address attach state. Apart from seen, which the
 // reaper reads, every field after cancel is owned by the run goroutine.
 type client struct {
-	mux     *mux
-	addr    netip.AddrPort
-	sess    *session.Session
-	nonce   []byte
-	ctx     context.Context
-	cancel  context.CancelFunc
-	watcher *session.Watcher
-	sizer   *session.Sizer
-	inbox   chan proto.Envelope
+	mux    *mux
+	addr   netip.AddrPort
+	nonce  []byte
+	ctx    context.Context
+	cancel context.CancelFunc
+	inbox  chan proto.Envelope
+
+	// sess is the session the client is looking at, which the run
+	// goroutine changes, under sessMu, when the user switches.
+	sessMu sync.Mutex
+	sess   *session.Session
+
+	watcher     *session.Watcher
+	watchCancel context.CancelFunc // stops watcher
+	sizer       *session.Sizer
+	sessEnded   bool // the session ended while the menu was open
+	rows, cols  int  // the client's screen, if known
+	escaped     bool // the last input byte was escapeByte
+	menu        *switcher.Menu
 
 	seenMu sync.Mutex
 	seen   time.Time
@@ -465,6 +521,34 @@ type sentState struct {
 	pkts   [][]byte
 	sentAt time.Time // time of the first transmission
 	tries  int       // transmissions, for Karn's algorithm
+}
+
+// session returns the session the client is looking at.
+func (c *client) session() *session.Session {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	return c.sess
+}
+
+// names reports whether idOrName names the client's session.
+func (c *client) names(idOrName string) bool {
+	s := c.session()
+	return idOrName == string(s.ID()) || (idOrName != "" && idOrName == s.Name())
+}
+
+// watch makes sess the client's session, watching it, and sizing it to the
+// client's screen, if known.
+func (c *client) watch(sess *session.Session) {
+	c.sessMu.Lock()
+	c.sess = sess
+	c.sessMu.Unlock()
+	ctx, cancel := context.WithCancel(c.ctx)
+	c.watcher, c.watchCancel = sess.Watch(ctx), cancel
+	c.sizer = sess.NewSizer("tsterm")
+	c.sessEnded = false
+	if c.rows > 0 && c.cols > 0 {
+		c.sizer.Want(c.rows, c.cols)
+	}
 }
 
 func (c *client) touch() {
@@ -513,11 +597,23 @@ func (c *client) sendAck() {
 
 // run is the client's event loop. It owns all screen-sync and input state.
 func (c *client) run() {
-	defer c.sizer.Close()
-	ticks := c.watcher.Ticks()
+	defer func() {
+		if c.menu != nil {
+			c.menu.Close()
+		}
+		c.sizer.Close()
+	}()
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
+		var ticks <-chan struct{}
+		if !c.sessEnded && !c.ended {
+			ticks = c.watcher.Ticks()
+		}
+		var menuChanged, menuDone <-chan struct{}
+		if c.menu != nil {
+			menuChanged, menuDone = c.menu.Changed(), c.menu.Done()
+		}
 		select {
 		case <-c.ctx.Done():
 			return
@@ -528,11 +624,20 @@ func (c *client) run() {
 				if c.ctx.Err() != nil {
 					return
 				}
-				ticks = nil
+				c.sessEnded = true
+				if c.menu != nil {
+					// The user may yet switch to another.
+					c.dirty = true
+					break
+				}
 				c.end()
 				continue
 			}
 			c.dirty = true
+		case <-menuChanged:
+			c.dirty = true
+		case <-menuDone:
+			c.closeMenu()
 		case env := <-c.inbox:
 			c.handle(env)
 		case <-timer.C:
@@ -580,9 +685,17 @@ func (c *client) handle(env proto.Envelope) {
 	}
 	switch {
 	case env.Hello != nil:
-		// The resize, if any, was applied in attach. Reply so the client
-		// knows it got through even if there is no screen to send.
+		h := env.Hello
+		if h.Rows > 0 && h.Cols > 0 && (h.Rows != c.rows || h.Cols != c.cols) {
+			c.resized(h.Rows, h.Cols)
+		}
+		// Reply so the client knows it got through even if there is no
+		// screen to send, and, if it names another session, which one
+		// it's looking at.
 		c.sendAck()
+		if !c.names(h.SessionID) {
+			c.send(viewing(c.sess))
+		}
 	case env.Input != nil:
 		c.handleInput(env.Input)
 	case env.Resize != nil:
@@ -613,18 +726,164 @@ func (c *client) handleInput(in *proto.Input) {
 		// Out-of-order: drop without ack so the client retransmits.
 		return
 	}
-	if len(in.Keys) > 0 {
-		// Whoever types is who the user is using.
-		if err := c.sizer.Lead(); err != nil {
-			c.mux.srv.Logf("udp: resize: %v", err)
+	keys := in.Keys
+	if c.menu == nil && len(keys) > 0 {
+		var out []byte
+		var open bool
+		out, open, keys = c.escape(keys)
+		if len(out) > 0 {
+			// Whoever types is who the user is using.
+			if err := c.sizer.Lead(); err != nil {
+				c.mux.srv.Logf("udp: resize: %v", err)
+			}
+			if _, err := c.sess.WriteInput(out); err != nil {
+				c.mux.srv.Logf("udp: write input: %v", err)
+				return
+			}
 		}
-		if _, err := c.sess.WriteInput(in.Keys); err != nil {
-			c.mux.srv.Logf("udp: write input: %v", err)
-			return
+		if open {
+			c.openMenu()
 		}
+	}
+	if c.menu != nil && len(keys) > 0 {
+		c.menu.Input(keys)
 	}
 	c.ackedSeq = in.Seq
 	c.sendAck()
+}
+
+// escapeByte and menuKey, typed one after the other, open the session
+// menu. escapeByte is Ctrl-^, which also begins the client's own commands,
+// such as Ctrl-^ . to disconnect; it passes on the rest. Ctrl-^ Ctrl-^
+// types one Ctrl-^.
+const (
+	escapeByte = 0x1e
+	menuKey    = '"'
+)
+
+// escape scans keys, typed into the session, for Ctrl-^ ". It returns the
+// keys to send the session, whether to open the menu, and, if so, the
+// keys after it, which are the menu's.
+func (c *client) escape(keys []byte) (out []byte, open bool, rest []byte) {
+	for i, b := range keys {
+		if !c.escaped {
+			if b == escapeByte {
+				c.escaped = true
+			} else {
+				out = append(out, b)
+			}
+			continue
+		}
+		c.escaped = false
+		switch b {
+		case menuKey:
+			return out, true, keys[i+1:]
+		case escapeByte:
+			out = append(out, escapeByte)
+		default:
+			out = append(out, escapeByte, b)
+		}
+	}
+	return out, false, nil
+}
+
+// openMenu opens the session menu over the client's screen.
+func (c *client) openMenu() {
+	rows, cols := c.rows, c.cols
+	if rows <= 0 || cols <= 0 {
+		rows, cols = c.sess.Size()
+	}
+	mgr := c.mux.srv.Manager
+	items := func() []switcher.Item {
+		var items []switcher.Item
+		for _, s := range mgr.List() {
+			if !s.Active {
+				continue
+			}
+			items = append(items, switcher.Item{
+				ID:       string(s.ID),
+				Name:     s.Name,
+				What:     strings.Join(s.Cmd, " "),
+				Created:  s.Created,
+				Activity: s.LastActivity(),
+				Watchers: s.Watchers,
+			})
+		}
+		return items
+	}
+	m, err := switcher.Open(items, string(c.sess.ID()), rows, cols)
+	if err != nil {
+		c.mux.srv.Logf("udp: opening the session menu: %v", err)
+		return
+	}
+	c.menu = m
+	c.dirty = true
+}
+
+// closeMenu handles the menu's closing: switching to the session the user
+// chose, if any.
+func (c *client) closeMenu() {
+	choice := c.menu.Choice()
+	c.menu = nil
+	c.dirty = true
+	if choice != "" && choice != string(c.sess.ID()) {
+		if sess, err := c.mux.srv.Manager.Resolve(choice); err == nil {
+			c.switchTo(sess)
+			return
+		} else {
+			c.mux.srv.Logf("udp: switching to %s: %v", choice, err)
+		}
+	}
+	if c.sessEnded {
+		c.end()
+	}
+}
+
+// switchTo switches the client to sess.
+func (c *client) switchTo(sess *session.Session) {
+	old := c.sess
+	c.watchCancel()
+	c.sizer.Close()
+	c.watch(sess)
+	// Switching to it is using it.
+	if err := c.sizer.Lead(); err != nil {
+		c.mux.srv.Logf("udp: resize: %v", err)
+	}
+	c.mux.forget(old, c.addr)
+	c.mux.remember(sess, c.addr, c.nonce, true)
+	if err := c.mux.srv.Manager.SetClosed(string(sess.ID()), false); err != nil {
+		c.mux.srv.Logf("udp: reopening %s: %v", sess.ID(), err)
+	}
+	if err := sess.MarkAttached(); err != nil {
+		c.mux.srv.Logf("udp: recording attach: %v", err)
+	}
+	c.send(viewing(sess))
+}
+
+// screen returns what the client should see: its session's screen, and
+// the menu over it, if it's open.
+func (c *client) screen() vt.Screen {
+	s := c.sess.Snapshot()
+	if c.menu == nil {
+		return s
+	}
+	rows, cols := c.rows, c.cols
+	if rows <= 0 || cols <= 0 {
+		rows, cols = s.Rows, s.Cols
+	}
+	return c.menu.Compose(s, rows, cols)
+}
+
+// resized records that the client's screen is now rows by cols.
+func (c *client) resized(rows, cols int) {
+	c.rows, c.cols = rows, cols
+	if err := c.sizer.Want(rows, cols); err != nil {
+		c.mux.srv.Logf("udp: resize: %v", err)
+	}
+	if c.menu != nil {
+		c.menu.Resize(rows, cols)
+		c.dirty = true
+	}
 }
 
 func (c *client) handleResize(rs *proto.Resize) {
@@ -637,7 +896,7 @@ func (c *client) handleResize(rs *proto.Resize) {
 		return
 	}
 	// The terminal's window changing size is the user using it.
-	c.sizer.Want(rs.Rows, rs.Cols)
+	c.resized(rs.Rows, rs.Cols)
 	if err := c.sizer.Lead(); err != nil {
 		c.mux.srv.Logf("udp: resize: %v", err)
 		return
@@ -722,7 +981,7 @@ func (c *client) step(now time.Time) (time.Duration, bool) {
 			return wait, true
 		}
 		c.dirty = false
-		cur := c.sess.Snapshot()
+		cur := c.screen()
 		if n := len(c.sent); n > 0 && c.sent[n-1].from == c.ackedNum && c.sent[n-1].screen.Equal(cur) {
 			// The newest outstanding update still describes the screen;
 			// leave it to the retransmission timer.
